@@ -334,13 +334,30 @@ Keys never reverse: Up/8 and Down/2 always move by one line; Page Up/7 and
 Page Down/1/Tab move one screen step earlier/later; Left/4 and Right/6 do the
 same except while a wide block owns horizontal focus.
 
+On a text-only Markdown screen, Down/2 places the bottom of the first
+not-yet-complete visual line on the viewport's bottom edge. The last line is
+therefore fully visible even when its font metrics or spacing do not match the
+nominal 18-pixel step. If the current screen contains a formula, rule, task
+control, or structured table row, Down/2 retains the bounded 18-pixel step so
+large or irregular content is never skipped or bisected by text geometry.
+Up/8 instead aligns a complete first text line at the viewport's top. With Auto
+line spacing, TXT chooses a nearby safe row count and redistributes the spare
+leading between those rows. Every full page—including after Down/2—therefore
+has a complete first row at y=0 and a complete final row ending at y=220.
+Manual TXT spacing retains the directional edge-alignment rule. No
+document-wide line index is built.
+
 A forward screen step uses the bottom edge of the old viewport. If a visual
 line is clipped there and less than 85% was visible, the new screen starts at
 that line's top so it can be read completely. If at least 85% was visible, the
 new screen starts at the first following line and does not repeat it. An
-immediate reverse returns to the exact previous top rather than estimating a
-new boundary. A formula or other row taller than the viewport still guarantees
-forward progress.
+Page Up aligns a complete first text line at the physical top, including when
+the saved prior origin came from bottom-aligned line scrolling. A formula or
+other row taller than the viewport still guarantees forward progress.
+TXT Page Down always starts with a complete top row. Under Auto spacing, each
+full destination also ends with a complete bottom row and advances past all
+rows shown on the preceding fitted page. Only a short final page retains
+unavoidable blank space after EOF.
 
 Both modes show continuous 0–100% progress and no page number. Markdown progress
 uses its reflowed document position; TXT uses the current source-byte offset.
@@ -548,10 +565,12 @@ click on ordinary document text does not change the theme.
 
 - Values: **Auto**, then **+2 px** through **+10 px** in one-pixel steps.
 - Default: **Auto**.
-- Effect: Auto uses about one fifth of the font em as normal leading, bounded to
-  2–5 pixels, and expands further for tall glyphs or formulas. Manual values set
-  a nominal body-size-plus-gap line height, but tall content can still require
-  additional clearance.
+- Effect: Markdown Auto uses about one fifth of the font em as normal leading,
+  bounded to 2–5 pixels, and expands further for tall glyphs or formulas. TXT
+  Auto chooses a nearby safe row count for the 220-pixel viewport and spreads
+  the remaining pixels between rows, keeping the first and last rows complete.
+  Manual values set a nominal body-size-plus-gap line height, but tall content
+  can still require additional clearance.
 - Persistence: per document.
 
 There is no `+1 px` value. Left from `+2 px` returns to Auto.

@@ -129,11 +129,14 @@ The portable platform, text, parser, and virtual-layout stack now provide:
   motion deadzones, and a 4:3 dominant-axis lock. One provisional correction
   before a named swipe recovers from landing wobble; after that, diagonal
   jitter cannot redirect the gesture. Slow sub-deadzone movement accumulates.
-- Page Up/Down and the discrete swipe axis start on a visual-line top. A line
+- Page Down and the forward discrete swipe start on a visual-line top. A line
   clipped by the old viewport is repeated so it becomes fully readable unless
   at least 85% was already visible; a fully or mostly displayed trailing line
-  is not carried onto the new screen. An immediate reverse returns to the exact
-  prior top. Oversized content still guarantees monotonic progress.
+  is not carried onto the new screen. Page Up and the reverse discrete swipe
+  align a complete text row at the physical top rather than restoring a
+  clipped prior origin. TXT Page Down always starts with a complete top row,
+  whether it repeats a partially read row or advances to wholly new content.
+  Oversized content still guarantees monotonic progress.
 - Full-width 320-pixel paper with no decorative side rails and a guaranteed
   two-pixel text-free inset at the physical bottom edge. Prose wraps against
   the configured margin on both sides; code and tables keep symmetric padding
@@ -291,8 +294,14 @@ retains the original evidence; its reproducible P1/P2 interaction findings now
 have regression coverage in the current implementation.
 
 - Up/down (or 8/2 outside Search): Up/8 scrolls toward earlier content and
-  Down/2 toward later content in both touchpad modes, including
-  while wide focus is open.
+  Down/2 toward later content in both touchpad modes. On a text-only Markdown
+  viewport, Down/2 bottom-aligns the first incomplete visual line so the new
+  last line is fully visible, while Up/8 aligns a complete first line at the
+  top. A viewport containing math or other non-text content keeps the bounded
+  18-pixel step. After downward TXT line movement, the complete trailing row's
+  visible ink is bottom-aligned by clipping the top row and the trailing line
+  gap instead of leaving a white strip below; upward TXT movement keeps the
+  top row complete.
 - Shift or Ctrl + up/down: context-preserving Screen Up/Screen Down in either
   touchpad mode, including while wide focus is open, or several rows in
   supported lists.
@@ -300,6 +309,7 @@ have regression coverage in the current implementation.
   earlier/later; pan a focused wide block; switch menu tabs or settings values
   where applicable. Only Left/Right changes the Search mode.
 - Tab or 1: Page Down toward later content. 7: Page Up toward earlier content.
+  On text-only content, Page Up aligns a complete first line at the top.
   These directions remain vertical while wide focus is open. Outside Search,
   the aliases also move several rows in lists that support page-sized selection
   movement. In Search, 1 and 7 are query text while Tab remains Page Down.
@@ -340,7 +350,9 @@ have regression coverage in the current implementation.
 
 The settings panel contains twelve rows, with nine visible at once: Theme
 (Light/Dark), Font size (12–22 px, default 15), Line spacing (content-aware Auto
-or +2 through +10 px), Side margins (2–18 px, default 5), Tables (Responsive or
+or +2 through +10 px; TXT Auto redistributes a few pixels of leading so every
+full 220 px page has complete first and last rows), Side margins (2–18 px,
+default 5), Tables (Responsive or
 Grid + pan), Code blocks (Wrap by default, or Pan), Contrast (Standard or High),
 Text sharpness (0–10, default Balanced 5; 0 is extra-smooth and 10 matches the
 former Sharpness 7 curve),

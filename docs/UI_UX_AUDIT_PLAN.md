@@ -78,7 +78,7 @@ and Horizontal/Reversed:
 2. Press Down then Up; repeat with 2 then 8. Verify the same one-line
    later/earlier mapping in every configuration.
 3. Press Page Down then Page Up; repeat with Tab then 7 and 1 then 7. Verify each
-   forward action advances and each immediate reverse returns to the exact top.
+   forward action advances and each reverse aligns a complete row at the top.
 4. Press Left at the top; verify it is inert. Press Right; verify a forward
    screen step. Press Left; verify exact reversal.
 5. Enter wide focus and verify Left/Right pan the focused canvas conventionally;
@@ -92,17 +92,22 @@ and Horizontal/Reversed:
    Page Down and capture before/after frames. Verify a fully displayed bottom
    line is absent from the new frame. Repeat with a deliberately clipped bottom
    line and verify only that incomplete line is retained from its top.
-2. Press Page Up immediately and verify the framebuffer returns to the exact
-   prior top. Repeat with the mode's discrete swipe axis.
-3. Use a formula taller than 220 pixels. Repeatedly press Page Down; verify every
+2. Press Page Up immediately and verify the framebuffer returns toward the
+   prior screen with a complete row aligned at the top. Repeat with the mode's
+   discrete swipe axis.
+3. Step forward through a TXT fixture whose line height does not divide the
+   viewport. Under Auto spacing, verify the adjusted leading makes every full
+   destination start and end with complete rows and that Page Down begins after
+   all rows shown on the preceding page.
+4. Use a formula taller than 220 pixels. Repeatedly press Page Down; verify every
    action moves forward, no step traps inside the formula, and following prose
    is reachable.
-4. Continue to the exact end. Verify progress reaches all 320 pixels only there;
+5. Continue to the exact end. Verify progress reaches all 320 pixels only there;
    reverse once and verify it becomes partial. Return to the exact start and
    verify it is zero pixels.
-5. Switch modes at a nonzero position and verify progress width and source anchor
+6. Switch modes at a nonzero position and verify progress width and source anchor
    do not change. Repeat with a one-viewport document and verify 0% in both modes.
-6. Save Horizontal Scroll plus Reversed at a recognizable position, exit, and
+7. Save Horizontal Scroll plus Reversed at a recognizable position, exit, and
    reopen. Verify both settings and the source-relative position restore. Repeat
    with Vertical Scroll plus Natural.
 7. Run the same flows in Firebird. Require native input markers, a fresh render
@@ -631,7 +636,10 @@ Full range and boundaries:
 10. Press Left once more; verify Auto remains selected.
 11. At Auto, +2, +6, and +10, close the menu, scroll across mixed paragraphs and display math, reopen, and verify the value and source anchor.
 12. Verify Auto is content-aware rather than displayed as a numeric gap, and that manual values are described as extra spacing rather than total line height.
-13. Leave +6 selected, exit and relaunch, verify persistence, then restore Auto.
+13. Open a multi-page TXT file at Auto for body sizes 12, 15, 18, and 22 px.
+    Verify each full initial, Down, and Page Down view has complete first and
+    last rows, with only small redistributed differences between row gaps.
+14. Leave +6 selected, exit and relaunch, verify persistence, then restore Auto.
 
 #### SET-04 — Side margins: every value from 2 px through 18 px
 
@@ -719,7 +727,7 @@ Scroll baseline:
 1. Open a document long enough for at least three viewports and return to its exact top.
 2. In Scroll mode, verify no page number is drawn in the upper-right header.
 3. Capture the top frame; verify the neutral two-pixel track spans the screen and the colored reading fill is exactly zero pixels wide (0%).
-4. Press Down once; verify an approximately 18-pixel line scroll rather than a full page.
+4. On a text-only screen, press Down once and verify the new trailing line is fully visible and bottom-aligned. Repeat on a screen containing a formula and verify the bounded approximately 18-pixel fallback rather than a geometry-derived jump or full page.
 5. Capture again; verify the colored fill is now partial and equals `floor(320 × scroll offset / maximum scroll offset)`.
 6. Press Shift+Down and Ctrl+Down separately; verify each performs a page-sized movement and each increases the fill continuously from its prior width.
 7. Perform a vertical touchpad drag; verify continuous movement and a corresponding continuous progress change rather than a page-sized jump.

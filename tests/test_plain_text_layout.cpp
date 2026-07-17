@@ -453,14 +453,20 @@ void test_forward_page_defers_when_reserve_is_empty() {
     const std::vector<nmarkdown::PlainTextVisibleLine> visible =
         layout.visible_lines(error);
     CHECK(error.empty());
-    int visible_height = 0;
-    for (const nmarkdown::PlainTextVisibleLine& item : visible) {
-        if (item.line != nullptr) {
-            visible_height +=
-                nmarkdown::fx_ceil(item.line->advance);
-        }
+    CHECK(!visible.empty());
+    if (!visible.empty() && visible.front().line != nullptr &&
+        visible.back().line != nullptr) {
+        const int first_top = visible.front().baseline_y -
+                              nmarkdown::fx_ceil(
+                                  visible.front().line->ascent);
+        const nmarkdown::Fx descent = visible.back().line->descent < 0
+                                           ? -visible.back().line->descent
+                                           : visible.back().line->descent;
+        const int last_bottom = visible.back().baseline_y +
+                                nmarkdown::fx_ceil(descent);
+        CHECK(first_top == 0);
+        CHECK(last_bottom == 220 || layout.at_end());
     }
-    CHECK(visible_height >= 220 || layout.at_end());
 }
 
 void test_pixel_scroll_accumulates_without_cancelling() {
@@ -593,6 +599,133 @@ void test_page_step_skips_a_fully_visible_line() {
     CHECK(layout.current_source_offset() == 0);
 }
 
+void test_auto_txt_spacing_fits_complete_rows_to_every_page() {
+    std::string content;
+    for (int line = 0; line < 256; ++line) {
+        content += "page overlap invariant line " +
+                   std::to_string(line) + "\n";
+    }
+    auto source = std::make_shared<CountingRandomAccess>(content);
+    nmarkdown::TextSystem text;
+    std::string error;
+    CHECK(text.initialize(error));
+
+    nmarkdown::LayoutSignature signature;  // Auto line spacing.
+    constexpr int viewport_height = 220;
+    nmarkdown::PlainTextLayout layout;
+    CHECK(layout.initialize(
+        source, 0, static_cast<std::uint32_t>(content.size()), {}, text,
+        signature, viewport_height, error));
+    layout.prepare_screen_window(error);
+    CHECK(error.empty());
+    warm_ready_glyphs(layout);
+
+    const auto source_offsets = [](const auto& visible) {
+        std::vector<std::uint32_t> offsets;
+        for (const nmarkdown::PlainTextVisibleLine& positioned : visible) {
+            if (positioned.line != nullptr) {
+                offsets.push_back(positioned.line->source_offset);
+            }
+        }
+        return offsets;
+    };
+    const auto first_top = [](const auto& visible) {
+        if (visible.empty() || visible.front().line == nullptr) return 0;
+        return visible.front().baseline_y -
+               nmarkdown::fx_ceil(visible.front().line->ascent);
+    };
+    const auto last_bottom = [](const auto& visible) {
+        if (visible.empty() || visible.back().line == nullptr) return 0;
+        const nmarkdown::Fx descent =
+            visible.back().line->descent < 0
+                ? -visible.back().line->descent
+                : visible.back().line->descent;
+        return visible.back().baseline_y + nmarkdown::fx_ceil(descent);
+    };
+
+    std::vector<nmarkdown::PlainTextVisibleLine> first =
+        layout.visible_lines(error);
+    CHECK(error.empty());
+    CHECK(first_top(first) == 0);
+    CHECK(last_bottom(first) == viewport_height);
+
+    CHECK(layout.move_line(1, error));
+    CHECK(error.empty());
+    first = layout.visible_lines(error);
+    CHECK(error.empty());
+    CHECK(first_top(first) == 0);
+    CHECK(last_bottom(first) == viewport_height);
+    const std::vector<std::uint32_t> first_offsets = source_offsets(first);
+
+    CHECK(layout.move_page(1, error));
+    CHECK(error.empty());
+    const std::vector<nmarkdown::PlainTextVisibleLine> second =
+        layout.visible_lines(error);
+    CHECK(error.empty());
+    CHECK(!second.empty());
+    if (second.empty() || second.front().line == nullptr) return;
+    // A fitted Auto page consumes every displayed row completely, so the next
+    // page starts after it without overlap or clipping.
+    CHECK(std::find(first_offsets.begin(), first_offsets.end(),
+                    second.front().line->source_offset) ==
+          first_offsets.end());
+    CHECK(first_top(second) == 0);
+    CHECK(last_bottom(second) == viewport_height);
+
+    layout.prepare_screen_window(error);
+    CHECK(error.empty());
+    warm_ready_glyphs(layout);
+    const std::vector<std::uint32_t> second_offsets = source_offsets(second);
+    CHECK(layout.move_page(1, error));
+    CHECK(error.empty());
+    const std::vector<nmarkdown::PlainTextVisibleLine> third =
+        layout.visible_lines(error);
+    CHECK(error.empty());
+    CHECK(!third.empty());
+    if (third.empty() || third.front().line == nullptr) return;
+    CHECK(first_top(third) == 0);
+    CHECK(last_bottom(third) == viewport_height);
+    CHECK(std::find(second_offsets.begin(), second_offsets.end(),
+                    third.front().line->source_offset) ==
+          second_offsets.end());
+
+    for (const int body_size : {12, 15, 18, 22}) {
+        nmarkdown::LayoutSignature sized_signature;
+        sized_signature.body_px = static_cast<std::uint16_t>(body_size);
+        nmarkdown::PlainTextLayout sized_layout;
+        CHECK(sized_layout.initialize(
+            source, 0, static_cast<std::uint32_t>(content.size()), {}, text,
+            sized_signature, viewport_height, error));
+        CHECK(error.empty());
+        for (int movement = 0; movement < 2; ++movement) {
+            const std::vector<nmarkdown::PlainTextVisibleLine> visible =
+                sized_layout.visible_lines(error);
+            CHECK(error.empty());
+            CHECK(!visible.empty());
+            CHECK(first_top(visible) == 0);
+            CHECK(last_bottom(visible) == viewport_height);
+            for (const nmarkdown::PlainTextVisibleLine& positioned : visible) {
+                if (positioned.line == nullptr) continue;
+                const int top = positioned.baseline_y -
+                                nmarkdown::fx_ceil(
+                                    positioned.line->ascent);
+                const nmarkdown::Fx descent =
+                    positioned.line->descent < 0
+                        ? -positioned.line->descent
+                        : positioned.line->descent;
+                const int bottom = positioned.baseline_y +
+                                   nmarkdown::fx_ceil(descent);
+                CHECK(top >= 0);
+                CHECK(bottom <= viewport_height);
+            }
+            if (movement == 0) {
+                CHECK(sized_layout.move_line(1, error));
+                CHECK(error.empty());
+            }
+        }
+    }
+}
+
 void test_page_up_after_line_scroll_uses_a_full_previous_viewport() {
     std::string content;
     for (int line = 0; line < 256; ++line) {
@@ -625,6 +758,86 @@ void test_page_up_after_line_scroll_uses_a_full_previous_viewport() {
         layout.visible_lines(error);
     CHECK(error.empty());
     CHECK(visible.size() > 1);
+    if (!visible.empty() && visible.front().line != nullptr) {
+        const int first_top = visible.front().baseline_y -
+                              nmarkdown::fx_ceil(
+                                  visible.front().line->ascent);
+        CHECK(first_top == 0);
+    }
+}
+
+void test_txt_scroll_aligns_the_movement_edge() {
+    std::string content;
+    for (int line = 0; line < 512; ++line) {
+        content += "complete trailing TXT row " + std::to_string(line) +
+                   " with enough words to exercise streaming wrap.\n";
+    }
+    auto source = std::make_shared<CountingRandomAccess>(content);
+    nmarkdown::TextSystem text;
+    std::string error;
+    CHECK(text.initialize(error));
+
+    nmarkdown::PlainTextLayout layout;
+    nmarkdown::LayoutSignature signature;
+    signature.line_height_px = 19;  // Exercise manual-spacing edge alignment.
+    constexpr int kViewportHeight = 220;
+    CHECK(layout.initialize(
+        source, 0, static_cast<std::uint32_t>(content.size()), {}, text,
+        signature, kViewportHeight, error));
+    CHECK(error.empty());
+
+    const auto expect_bottom_aligned_rows = [&]() {
+        const std::vector<nmarkdown::PlainTextVisibleLine> visible =
+            layout.visible_lines(error);
+        CHECK(error.empty());
+        CHECK(!visible.empty());
+        for (const nmarkdown::PlainTextVisibleLine& positioned : visible) {
+            CHECK(positioned.line != nullptr);
+            if (positioned.line == nullptr) continue;
+            const nmarkdown::Fx descent = positioned.line->descent < 0
+                                               ? -positioned.line->descent
+                                               : positioned.line->descent;
+            CHECK(positioned.baseline_y + nmarkdown::fx_ceil(descent) <=
+                  kViewportHeight);
+        }
+        if (!visible.empty() && visible.front().line != nullptr &&
+            visible.back().line != nullptr) {
+            const int first_top = visible.front().baseline_y -
+                                  nmarkdown::fx_ceil(
+                                      visible.front().line->ascent);
+            const nmarkdown::Fx last_descent =
+                visible.back().line->descent < 0
+                    ? -visible.back().line->descent
+                    : visible.back().line->descent;
+            const int last_bottom = visible.back().baseline_y +
+                                    nmarkdown::fx_ceil(last_descent);
+            CHECK(first_top < 0);  // Clip the top row, not the bottom row.
+            CHECK(last_bottom == kViewportHeight);
+        }
+    };
+
+    expect_bottom_aligned_rows();
+    const std::uint32_t before = layout.current_source_offset();
+    CHECK(layout.move_line(1, error));
+    CHECK(error.empty());
+    CHECK(layout.current_source_offset() > before);
+    expect_bottom_aligned_rows();
+
+    CHECK(layout.move_line(-1, error));
+    CHECK(error.empty());
+    const std::vector<nmarkdown::PlainTextVisibleLine> upward =
+        layout.visible_lines(error);
+    CHECK(error.empty());
+    CHECK(!upward.empty());
+    if (!upward.empty() && upward.front().line != nullptr) {
+        const int first_top = upward.front().baseline_y -
+                              nmarkdown::fx_ceil(
+                                  upward.front().line->ascent);
+        CHECK(first_top == 0);
+    }
+    // The operation remains local to the bounded streaming screen cache; it
+    // never requires a document-wide TXT line index.
+    CHECK(source->largest_read <= nmarkdown::kPlainTextInitialCacheBytes);
 }
 
 void test_long_paragraph_screen_build_is_split_across_idle_quanta() {
@@ -683,7 +896,9 @@ int main() {
     test_pixel_scroll_accumulates_without_cancelling();
     test_screen_window_page_offsets_seek_and_search();
     test_page_step_skips_a_fully_visible_line();
+    test_auto_txt_spacing_fits_complete_rows_to_every_page();
     test_page_up_after_line_scroll_uses_a_full_previous_viewport();
+    test_txt_scroll_aligns_the_movement_edge();
     test_long_paragraph_screen_build_is_split_across_idle_quanta();
     if (failures != 0) {
         std::fprintf(stderr, "%d plain-text layout test(s) failed\n",

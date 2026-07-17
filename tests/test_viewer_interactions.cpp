@@ -599,8 +599,9 @@ void test_touchpad_modes_and_gesture_direction() {
     const int line_position = viewer.scroll_y();
     CHECK(line_position > 0);
     CHECK(send(viewer, nmarkdown::InputEventType::ScrollLineUp));
+    CHECK(viewer.scroll_y() < line_position);
+    CHECK(send(viewer, nmarkdown::InputEventType::PageUp));
     CHECK(viewer.scroll_y() == 0);
-
     CHECK(!send(viewer, nmarkdown::InputEventType::PageUp));
 
     CHECK(send(viewer, nmarkdown::InputEventType::PageDown));
@@ -659,12 +660,14 @@ void test_touchpad_modes_and_gesture_direction() {
     CHECK(!send(viewer, nmarkdown::InputEventType::ScrollLineUp));
     CHECK(send_numeric_alias(viewer, nmarkdown::InputEventType::ScrollLineDown,
                              '2'));
-    CHECK(viewer.scroll_y() == 18);
+    const int horizontal_line_position = viewer.scroll_y();
+    CHECK(horizontal_line_position > 0);
     CHECK(viewer.current_page() == 1);
     CHECK(send_numeric_alias(viewer, nmarkdown::InputEventType::ScrollLineUp,
                              '8'));
+    CHECK(viewer.scroll_y() < horizontal_line_position);
+    CHECK(send_numeric_alias(viewer, nmarkdown::InputEventType::PageUp, '8'));
     CHECK(viewer.scroll_y() == 0);
-
     CHECK(!send_numeric_alias(viewer, nmarkdown::InputEventType::PageUp, '8'));
     CHECK(send_numeric_alias(viewer, nmarkdown::InputEventType::PageDown, '2'));
     const int keyed_step = viewer.scroll_y();
@@ -1162,6 +1165,141 @@ void test_tall_formula_pages_continue_into_following_content() {
     CHECK(viewer.reader_state(0).position.nearest_block == trailing_node);
 }
 
+void test_line_down_aligns_the_last_visible_markdown_line() {
+    current_case = "text-only line movement aligns its destination edge";
+    std::string source = "```text\n";
+    for (int line = 0; line < 80; ++line) {
+        source += "line " + std::to_string(line) + " alignment probe\n";
+    }
+    source += "```\n";
+
+    nmarkdown::MarkdownDocument reference_document;
+    std::string error;
+    CHECK(nmarkdown::parse_markdown(
+        reinterpret_cast<const std::uint8_t*>(source.data()), source.size(),
+        reference_document, error));
+    nmarkdown::TextSystem reference_text;
+    CHECK(reference_text.initialize(error));
+    nmarkdown::VirtualDocumentLayout reference_layout;
+    nmarkdown::LayoutSignature signature;
+    signature.content_width = 310;
+    CHECK(reference_layout.initialize(reference_document, reference_text,
+                                      signature, error));
+    const nmarkdown::BlockLayout* block = reference_layout.layout_unit(0);
+    CHECK(block != nullptr);
+    if (block == nullptr) return;
+
+    struct LineBounds {
+        int top = 0;
+        int bottom = 0;
+    };
+    std::vector<LineBounds> lines;
+    constexpr int kViewportHeight = 220;
+    for (const nmarkdown::LayoutLine& line : block->lines) {
+        const int top = nmarkdown::fx_floor(reference_layout.unit_top(0)) +
+                        nmarkdown::fx_floor(line.baseline_y) -
+                        nmarkdown::fx_ceil(line.ascent);
+        const nmarkdown::Fx descent = line.descent < 0
+                                           ? -line.descent : line.descent;
+        const int bottom = nmarkdown::fx_floor(reference_layout.unit_top(0)) +
+                           nmarkdown::fx_floor(line.baseline_y) +
+                           nmarkdown::fx_ceil(descent);
+        lines.push_back({top, std::max(top + 1, bottom)});
+    }
+
+    int start = -1;
+    int first_target = -1;
+    int second_target = -1;
+    int first_bottom = -1;
+    int second_bottom = -1;
+    for (int candidate = 1; candidate < kViewportHeight && start < 0;
+         ++candidate) {
+        const int boundary = candidate + kViewportHeight;
+        for (std::size_t index = 0; index + 1 < lines.size(); ++index) {
+            const LineBounds& line = lines[index];
+            if (line.top >= boundary || line.bottom <= boundary) continue;
+            const int target = line.bottom - kViewportHeight;
+            const int next_boundary = target + kViewportHeight;
+            for (std::size_t next = index + 1; next < lines.size(); ++next) {
+                if (lines[next].bottom <= next_boundary) continue;
+                const int following = lines[next].bottom - kViewportHeight;
+                if (target > candidate && following > target &&
+                    target - candidate != 18) {
+                    start = candidate;
+                    first_target = target;
+                    second_target = following;
+                    first_bottom = line.bottom;
+                    second_bottom = lines[next].bottom;
+                }
+                break;
+            }
+            break;
+        }
+    }
+    CHECK(start > 0);
+    CHECK(first_target > start);
+    CHECK(second_target > first_target);
+    if (start <= 0 || first_target <= start || second_target <= first_target) {
+        return;
+    }
+
+    nmarkdown::Viewer viewer;
+    CHECK(load_markdown(viewer, source));
+    std::vector<std::uint16_t> pixels(320 * 240, 0);
+    nmarkdown::Surface565 surface(pixels.data(), 320, 240, 320);
+    viewer.render(surface);
+    CHECK(send(viewer, nmarkdown::InputEventType::PointerScroll, -start));
+    CHECK(viewer.scroll_y() == start);
+
+    CHECK(send_numeric_alias(viewer,
+                             nmarkdown::InputEventType::ScrollLineDown, '2'));
+    CHECK(viewer.scroll_y() == first_target);
+    CHECK(viewer.scroll_y() + kViewportHeight ==
+          first_bottom);
+
+    CHECK(send_numeric_alias(viewer,
+                             nmarkdown::InputEventType::ScrollLineDown, '2'));
+    CHECK(viewer.scroll_y() == second_target);
+    CHECK(viewer.scroll_y() + kViewportHeight == second_bottom);
+
+    const auto is_line_top = [&lines](int position) {
+        for (const LineBounds& line : lines) {
+            if (line.top == position) return true;
+        }
+        return position == 0;
+    };
+    const int before_first_up = viewer.scroll_y();
+    CHECK(send_numeric_alias(viewer,
+                             nmarkdown::InputEventType::ScrollLineUp, '8'));
+    CHECK(viewer.scroll_y() < before_first_up);
+    CHECK(is_line_top(viewer.scroll_y()));
+    const int before_second_up = viewer.scroll_y();
+    CHECK(send_numeric_alias(viewer,
+                             nmarkdown::InputEventType::ScrollLineUp, '8'));
+    CHECK(viewer.scroll_y() < before_second_up);
+    CHECK(is_line_top(viewer.scroll_y()));
+
+    // Any formula in the current viewport disables text-line alignment. This
+    // keeps large or irregular math content on the bounded legacy step.
+    std::string formula_source =
+        "Text with inline math $\\frac{x^2+1}{y}$ on the first screen.\n\n";
+    for (int index = 0; index < 48; ++index) {
+        formula_source += "Following text keeps the document scrollable.\n\n";
+    }
+    nmarkdown::Viewer formula_viewer;
+    CHECK(load_markdown(formula_viewer, formula_source));
+    formula_viewer.render(surface);
+    CHECK(send_numeric_alias(formula_viewer,
+                             nmarkdown::InputEventType::ScrollLineDown, '2'));
+    CHECK(formula_viewer.scroll_y() == 18);
+    CHECK(send_numeric_alias(formula_viewer,
+                             nmarkdown::InputEventType::ScrollLineDown, '2'));
+    CHECK(formula_viewer.scroll_y() == 36);
+    CHECK(send_numeric_alias(formula_viewer,
+                             nmarkdown::InputEventType::ScrollLineUp, '8'));
+    CHECK(formula_viewer.scroll_y() == 18);
+}
+
 void test_page_keys_land_on_complete_line_boundaries() {
     current_case = "screen steps skip fully displayed boundary lines";
     std::string source = "```text\n";
@@ -1283,6 +1421,43 @@ void test_page_keys_land_on_complete_line_boundaries() {
         CHECK(viewer.scroll_y() == mostly_visible_start);
         CHECK(send(viewer, nmarkdown::InputEventType::PageDown));
         CHECK(viewer.scroll_y() == mostly_visible_target);
+        int expected_page_up = 0;
+        for (const LineBounds& line : lines) {
+            if (line.top <= mostly_visible_start) {
+                expected_page_up = std::max(expected_page_up, line.top);
+            }
+        }
+        CHECK(send(viewer, nmarkdown::InputEventType::PageUp));
+        CHECK(viewer.scroll_y() == expected_page_up);
+    }
+
+    // Page Down may produce a clipped top only at a bottom-aligned final or
+    // overlap page. In that case the clipped row must intersect the complete
+    // preceding viewport; wholly new rows always start at their top.
+    {
+        nmarkdown::Viewer viewer;
+        CHECK(load_markdown(viewer, source));
+        std::vector<std::uint16_t> pixels(320 * 240, 0);
+        nmarkdown::Surface565 surface(pixels.data(), 320, 240, 320);
+        viewer.render(surface);
+        int guard = 0;
+        while (viewer.scroll_y() < viewer.max_scroll_y() && guard < 64) {
+            const int previous_top = viewer.scroll_y();
+            CHECK(send(viewer, nmarkdown::InputEventType::PageDown));
+            const int next_top = viewer.scroll_y();
+            CHECK(next_top > previous_top);
+            for (const LineBounds& line : lines) {
+                if (line.top < next_top && line.bottom > next_top) {
+                    CHECK(line.bottom > previous_top);
+                    CHECK(line.top < previous_top + kViewportHeight);
+                    break;
+                }
+            }
+            viewer.render(surface);
+            ++guard;
+        }
+        CHECK(guard < 64);
+        CHECK(viewer.scroll_y() == viewer.max_scroll_y());
     }
 }
 
@@ -1350,6 +1525,7 @@ int main() {
     test_large_display_formula_can_be_focused_and_panned();
     test_formula_pan_is_not_artificially_capped();
     test_tall_formula_pages_continue_into_following_content();
+    test_line_down_aligns_the_last_visible_markdown_line();
     test_page_keys_land_on_complete_line_boundaries();
     test_render_culls_lines_outside_the_viewport();
     test_font_manager_suggests_shared_multifunction_roles();

@@ -170,6 +170,10 @@ private:
     int block_stride() const;
     int content_width() const;
     int reading_progress_width() const;
+    bool current_markdown_view_is_text_only();
+    int previous_line_scroll_y();
+    int next_line_scroll_y();
+    void move_markdown_line(int direction);
     int aligned_scroll_y_near(int nominal, bool forward);
     int next_page_scroll_y(int direction);
     void move_page(int direction);
@@ -250,6 +254,8 @@ private:
     };
     std::vector<ScreenStepPosition> screen_step_history_;
     bool screen_step_event_ = false;
+    std::vector<ScreenStepPosition> line_step_history_;
+    bool line_step_event_ = false;
     TextSystem text_;
     MathSystem math_;
     bool text_ready_ = false;

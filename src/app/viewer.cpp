@@ -1914,6 +1914,7 @@ void Viewer::set_document(const DocumentProbe& document) {
                                                                  std::max<std::uint64_t>(720U, scaled)));
     scroll_y_ = 0;
     screen_step_history_.clear();
+    line_step_history_.clear();
     pan_x_ = 0;
     wide_focus_ = false;
     focused_node_ = kInvalidNode;
@@ -1999,6 +2000,7 @@ bool Viewer::set_markdown_document(std::unique_ptr<MarkdownDocument> document,
                                 fx_ceil(markdown_layout_.total_height()));
     scroll_y_ = 0;
     screen_step_history_.clear();
+    line_step_history_.clear();
     pan_x_ = 0;
     wide_focus_ = false;
     focused_node_ = kInvalidNode;
@@ -2078,6 +2080,7 @@ bool Viewer::set_plain_text_document(
     document_height_ = kViewportHeight;
     scroll_y_ = 0;
     screen_step_history_.clear();
+    line_step_history_.clear();
     pan_x_ = 0;
     wide_focus_ = false;
     focused_node_ = kInvalidNode;
@@ -2133,6 +2136,7 @@ void Viewer::set_document_error(std::string message) {
     document_height_ = 720 * body_pixel_size_ / 15;
     scroll_y_ = 0;
     screen_step_history_.clear();
+    line_step_history_.clear();
     pan_x_ = 0;
     wide_focus_ = false;
     focused_node_ = kInvalidNode;
@@ -2221,6 +2225,7 @@ bool Viewer::apply_reader_state(const ReaderState& state,
             state.position.relative_position_0_65535));
     }
     screen_step_history_.clear();
+    line_step_history_.clear();
     document_height_ = std::max(kViewportHeight,
                                 fx_ceil(markdown_layout_.total_height()));
     pending_final_page_restore_ =
@@ -2367,6 +2372,171 @@ int Viewer::reading_progress_width() const {
                             maximum);
 }
 
+bool Viewer::current_markdown_view_is_text_only() {
+    if (markdown_document_ == nullptr || markdown_layout_.unit_count() == 0) {
+        return false;
+    }
+
+    // Edge alignment is intentionally a text-only affordance. Formula
+    // boxes, rules, task controls, and structured table rows have their own
+    // geometry; a line-derived target could jump through or bisect them. The
+    // scan is bounded to the current viewport and does not build a global
+    // index, which keeps very large documents responsive.
+    const ViewAnchor old_anchor =
+        markdown_layout_.anchor_at(fx_from_int(scroll_y_));
+    const std::vector<VisibleBlock> current_view =
+        markdown_layout_.layout_window(fx_from_int(scroll_y_),
+                                       fx_from_int(kViewportHeight), 0);
+    document_height_ = std::max(
+        kViewportHeight, fx_ceil(markdown_layout_.total_height()));
+    scroll_y_ = fx_floor(markdown_layout_.position_of(old_anchor));
+    clamp_view();
+    bool text_only = !current_view.empty();
+    for (const VisibleBlock& visible : current_view) {
+        const BlockLayout* block = visible.layout;
+        if (block == nullptr ||
+            (block->kind != BlockKind::Paragraph &&
+             block->kind != BlockKind::Heading &&
+             block->kind != BlockKind::CodeBlock)) {
+            text_only = false;
+            break;
+        }
+        for (const LayoutLine& line : block->lines) {
+            const int block_top = fx_floor(visible.document_y);
+            const Fx descent = line.descent < 0 ? -line.descent
+                                                : line.descent;
+            const int line_top = block_top + fx_floor(line.baseline_y) -
+                                 fx_ceil(line.ascent);
+            const int line_bottom = block_top + fx_floor(line.baseline_y) +
+                                    fx_ceil(descent);
+            if (line_bottom <= scroll_y_ ||
+                line_top >= scroll_y_ + kViewportHeight) {
+                continue;
+            }
+            for (const LayoutRun& run : line.runs) {
+                if (run.math != nullptr || run.task_checkbox) {
+                    text_only = false;
+                    break;
+                }
+            }
+            if (!text_only) break;
+        }
+        if (!text_only) break;
+    }
+    return text_only;
+}
+
+int Viewer::previous_line_scroll_y() {
+    if (scroll_y_ <= 0) return scroll_y_;
+    if (!current_markdown_view_is_text_only()) {
+        return std::max(0, scroll_y_ - kLineScroll);
+    }
+
+    // If the top row is clipped, its own top is the preceding boundary. If it
+    // is already aligned, resolve one pixel above it to select the prior row.
+    // Either way Scroll Up finishes with a complete row flush at the top.
+    const int nominal = std::max(0, scroll_y_ - 1);
+    const int target = aligned_scroll_y_near(nominal, false);
+    if (target == nominal && scroll_y_ <= kLineScroll) return 0;
+    if (target >= scroll_y_) {
+        return std::max(0, scroll_y_ - kLineScroll);
+    }
+    return target;
+}
+
+int Viewer::next_line_scroll_y() {
+    int maximum = max_scroll_y();
+    if (scroll_y_ >= maximum) return scroll_y_;
+    if (!current_markdown_view_is_text_only()) {
+        return std::min(maximum, scroll_y_ + kLineScroll);
+    }
+
+    maximum = max_scroll_y();
+    if (scroll_y_ >= maximum) {
+        return std::min(maximum, scroll_y_ + kLineScroll);
+    }
+
+    const int viewport_bottom = scroll_y_ + kViewportHeight;
+    const auto line_bounds = [this](std::size_t unit,
+                                    const LayoutLine& line,
+                                    int& top,
+                                    int& bottom) {
+        const int block_top = fx_floor(markdown_layout_.unit_top(unit));
+        top = block_top + fx_floor(line.baseline_y) - fx_ceil(line.ascent);
+        const Fx descent = line.descent < 0 ? -line.descent : line.descent;
+        bottom = block_top + fx_floor(line.baseline_y) + fx_ceil(descent);
+        if (bottom <= top) bottom = top + 1;
+    };
+
+    // Lazy block measurement can move the unit that owns the old viewport
+    // boundary. Re-resolve locally until the boundary and its line geometry
+    // come from the same height table.
+    for (int pass = 0; pass < 3; ++pass) {
+        std::size_t unit =
+            markdown_layout_.unit_at(fx_from_int(viewport_bottom));
+        markdown_layout_.layout_unit(unit);
+        document_height_ = std::max(
+            kViewportHeight, fx_ceil(markdown_layout_.total_height()));
+        const std::size_t resolved =
+            markdown_layout_.unit_at(fx_from_int(viewport_bottom));
+        if (resolved != unit) continue;
+
+        for (std::size_t scanned = 0;
+             unit < markdown_layout_.unit_count() && scanned < 64;
+             ++unit, ++scanned) {
+            const BlockLayout* block = markdown_layout_.layout_unit(unit);
+            document_height_ = std::max(
+                kViewportHeight, fx_ceil(markdown_layout_.total_height()));
+            if (block == nullptr) continue;
+            for (const LayoutLine& line : block->lines) {
+                int top = 0;
+                int bottom = 0;
+                line_bounds(unit, line, top, bottom);
+                if (bottom <= viewport_bottom) continue;
+
+                // A formula or other single visual row taller than the whole
+                // viewport cannot be made fully visible. Preserve incremental
+                // progress through it instead of skipping to its bottom.
+                if (bottom - top > kViewportHeight) {
+                    return std::min(max_scroll_y(),
+                                    scroll_y_ + kLineScroll);
+                }
+
+                // Place the first not-yet-complete visual line flush with the
+                // bottom edge. This makes key 2 reveal one complete last line
+                // even when font metrics or spacing are not 18 pixels.
+                const int target = bottom - kViewportHeight;
+                const int current_maximum = max_scroll_y();
+                if (current_maximum <= scroll_y_) return current_maximum;
+                return std::max(scroll_y_ + 1,
+                                std::min(current_maximum, target));
+            }
+        }
+        break;
+    }
+    return std::min(max_scroll_y(), scroll_y_ + kLineScroll);
+}
+
+void Viewer::move_markdown_line(int direction) {
+    if (direction == 0) return;
+    line_step_event_ = true;
+    const int previous = scroll_y_;
+
+    if (direction < 0) {
+        line_step_history_.clear();
+        scroll_y_ = previous_line_scroll_y();
+        return;
+    }
+
+    scroll_y_ = next_line_scroll_y();
+    if (scroll_y_ > previous) {
+        if (line_step_history_.size() >= kMaximumScreenStepHistory) {
+            line_step_history_.erase(line_step_history_.begin());
+        }
+        line_step_history_.push_back({previous, scroll_y_});
+    }
+}
+
 bool Viewer::jump_to_percentage(unsigned percentage) {
     if (!plain_text_layout_.loaded()) return false;
     std::string error;
@@ -2490,8 +2660,7 @@ int Viewer::next_page_scroll_y(int direction) {
     // Align at the physical viewport boundary. A row clipped by that boundary
     // is repeated from its top so it becomes fully readable; a row whose
     // bottom is at or above the boundary has already been displayed and is
-    // skipped. The screen-step history below makes the immediate Page Up an
-    // exact inverse without manufacturing a fully visible overlap line.
+    // skipped.
     const int nominal = direction > 0
                             ? std::min(maximum,
                                        scroll_y_ + kViewportHeight)
@@ -2548,7 +2717,15 @@ void Viewer::move_page(int direction) {
     const int previous_scroll = scroll_y_;
     if (direction < 0 && !screen_step_history_.empty() &&
         screen_step_history_.back().to == scroll_y_) {
-        scroll_y_ = screen_step_history_.back().from;
+        const int prior_screen = screen_step_history_.back().from;
+        // A preceding text-only screen starts with a complete top row even
+        // when its saved origin came from bottom-aligned line scrolling. Keep
+        // mixed-content screens on their established exact-history path.
+        scroll_y_ = current_markdown_view_is_text_only()
+                        ? (prior_screen < kLineScroll
+                               ? 0
+                               : aligned_scroll_y_near(prior_screen, false))
+                        : prior_screen;
         screen_step_history_.pop_back();
     } else {
         if (direction < 0) screen_step_history_.clear();
@@ -2585,6 +2762,7 @@ bool Viewer::handle_event(const InputEvent& event) {
     // Any user input before that frame takes ownership of the position.
     pending_final_page_restore_ = false;
     screen_step_event_ = false;
+    line_step_event_ = false;
     if (event.type == InputEventType::Quit) {
         quit_requested_ = true;
         return true;
@@ -3190,7 +3368,7 @@ bool Viewer::handle_event(const InputEvent& event) {
                 show_message("TXT read error", error);
             }
         } else {
-            scroll_y_ -= kLineScroll;
+            move_markdown_line(-1);
         }
         break;
     case InputEventType::ScrollLineDown:
@@ -3213,7 +3391,7 @@ bool Viewer::handle_event(const InputEvent& event) {
                 show_message("TXT read error", error);
             }
         } else {
-            scroll_y_ += kLineScroll;
+            move_markdown_line(1);
         }
         break;
     case InputEventType::SwipeUp:
@@ -3640,6 +3818,9 @@ bool Viewer::handle_event(const InputEvent& event) {
     clamp_view();
     if (old_scroll != scroll_y_ && !screen_step_event_) {
         screen_step_history_.clear();
+    }
+    if (old_scroll != scroll_y_ && !line_step_event_) {
+        line_step_history_.clear();
     }
 #if defined(NMARKDOWN_FIREBIRD_THEME_FIXTURE)
     if (old_settings_overlay && settings_overlay_ &&

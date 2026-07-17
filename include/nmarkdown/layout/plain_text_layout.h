@@ -160,6 +160,9 @@ private:
     bool build_future_screen_step(std::string& error);
     bool ensure_future_screen(std::string& error);
     void reset_pending_screen();
+    void reset_auto_page_rows();
+    void observe_auto_line_metrics(const LayoutLine& line);
+    bool auto_page_fit() const;
     bool find_cached_position(std::uint32_t offset,
                               std::size_t& screen,
                               std::size_t& line) const;
@@ -204,6 +207,7 @@ private:
     TextSystem* text_ = nullptr;
     LayoutSignature signature_{};
     int viewport_height_ = 0;
+    std::size_t auto_rows_per_page_ = 0;
 
     std::vector<std::uint8_t> raw_cache_;
     std::vector<std::uint8_t> raw_cache_scratch_;
@@ -217,6 +221,7 @@ private:
     bool pending_screen_active_ = false;
     std::size_t current_screen_ = 0;
     std::size_t current_line_ = 0;
+    bool bottom_align_visible_rows_ = true;
     std::deque<std::uint32_t> page_start_offsets_;
     int approximate_page_ = 1;
     int pixel_scroll_remainder_ = 0;
@@ -229,6 +234,7 @@ private:
     std::size_t deferred_warm_run_ = 0;
     std::size_t deferred_warm_glyph_ = 0;
     int deferred_warm_height_ = 0;
+    std::size_t deferred_warm_rows_ = 0;
     std::uint64_t deferred_warm_start_evictions_ = 0;
     bool deferred_warm_failed_ = false;
     std::uint8_t deferred_warm_retry_count_ = 0;

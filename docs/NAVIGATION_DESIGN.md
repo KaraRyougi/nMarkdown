@@ -94,7 +94,12 @@ unstable page total.
 - Swipe and continuous-scroll directions can be changed independently.
 - A physical gesture is applied once even though the input sampler emits both
   continuous deltas and one threshold swipe marker.
-- Page Down followed immediately by Page Up returns to the exact starting top.
+- Page Up returns to the preceding text screen with a complete row aligned at
+  the physical top, even when the saved origin had a clipped top row.
+- A TXT Page Down destination always top-aligns a complete first row, including
+  when it repeats a row that intersected the preceding viewport.
+- With TXT Auto spacing, a full viewport redistributes leading across a fitted
+  row count so both the first ink top and final ink bottom are complete.
 - Ordinary text repeats only a visual line that was clipped with less than 85%
   visible in the old viewport.
 - Tall formulas and long documents remain reachable through the exact end.

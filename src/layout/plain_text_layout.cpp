@@ -46,6 +46,26 @@ int line_advance_px(const LayoutLine& line) {
     return std::max(1, fx_ceil(line.advance));
 }
 
+int line_ink_bottom_px(const LayoutLine& line, int top) {
+    const Fx descent = line.descent < 0 ? -line.descent : line.descent;
+    return top + fx_ceil(line.ascent) + fx_ceil(descent);
+}
+
+int line_ink_height_px(const LayoutLine& line) {
+    return line_ink_bottom_px(line, 0);
+}
+
+int screen_cache_target_height(const LayoutSignature& signature,
+                               int viewport_height) {
+    const int guard_line = std::max<int>(
+        signature.body_px + 8,
+        signature.line_height_px != 0
+            ? signature.line_height_px
+            : signature.body_px + std::max<int>(
+                  2, (signature.body_px + 4) / 5));
+    return viewport_height + guard_line;
+}
+
 std::uint32_t safe_line_end(const LayoutLine& line) {
     return line.source_offset + line.source_length;
 }
@@ -88,6 +108,7 @@ bool PlainTextLayout::initialize(
         text.glyph_cache_clear_generation();
     signature_ = signature;
     viewport_height_ = viewport_height;
+    reset_auto_page_rows();
 
     const std::uint8_t* contiguous = source_->contiguous_data();
     if (contiguous != nullptr) {
@@ -153,6 +174,7 @@ void PlainTextLayout::clear() {
     text_ = nullptr;
     signature_ = {};
     viewport_height_ = 0;
+    auto_rows_per_page_ = 0;
     raw_cache_.clear();
     raw_cache_scratch_.clear();
     raw_cache_offset_ = 0;
@@ -163,6 +185,7 @@ void PlainTextLayout::clear() {
     reset_pending_screen();
     current_screen_ = 0;
     current_line_ = 0;
+    bottom_align_visible_rows_ = true;
     page_start_offsets_.clear();
     approximate_page_ = 1;
     pixel_scroll_remainder_ = 0;
@@ -183,6 +206,7 @@ bool PlainTextLayout::reconfigure(const LayoutSignature& signature,
     if (signature == signature_) return true;
     const std::uint32_t position = current_source_offset();
     signature_ = signature;
+    reset_auto_page_rows();
     page_start_offsets_.clear();
     approximate_page_ = 1;
     return rebuild_at(position, error);
@@ -524,6 +548,31 @@ bool PlainTextLayout::build_line(
     return true;
 }
 
+void PlainTextLayout::reset_auto_page_rows() {
+    auto_rows_per_page_ = 0;
+    if (signature_.line_height_px != 0 || viewport_height_ <= 0) return;
+    // Leave a small safety reserve above the normal leading, then distribute
+    // the remaining pixels evenly between the fitted rows at paint time.
+    const int minimum_advance = std::max<int>(
+        1, static_cast<int>(signature_.body_px) + 4);
+    auto_rows_per_page_ = std::max<std::size_t>(
+        1, static_cast<std::size_t>(viewport_height_ / minimum_advance));
+}
+
+void PlainTextLayout::observe_auto_line_metrics(const LayoutLine& line) {
+    if (!auto_page_fit()) return;
+    const int minimum_advance = std::max<int>(
+        static_cast<int>(signature_.body_px) + 4,
+        line_advance_px(line));
+    const std::size_t safe_rows = std::max<std::size_t>(
+        1, static_cast<std::size_t>(viewport_height_ / minimum_advance));
+    auto_rows_per_page_ = std::min(auto_rows_per_page_, safe_rows);
+}
+
+bool PlainTextLayout::auto_page_fit() const {
+    return signature_.line_height_px == 0 && auto_rows_per_page_ != 0;
+}
+
 bool PlainTextLayout::build_screen(std::uint32_t start_offset,
                                    Screen& screen,
                                    std::string& error) {
@@ -537,13 +586,16 @@ bool PlainTextLayout::build_screen(std::uint32_t start_offset,
     }
 
     int height = 0;
+    const int target_height =
+        screen_cache_target_height(signature_, viewport_height_);
     std::uint32_t cursor = screen.start_offset;
-    while (height < viewport_height_ && cursor < source_size_) {
+    while (height < target_height && cursor < source_size_) {
         LayoutLine line;
         bool eof = false;
         if (!build_line(cursor, line, eof, error)) {
             return false;
         }
+        observe_auto_line_metrics(line);
         cursor = safe_line_end(line);
         height += line_advance_px(line);
         screen.lines.push_back(std::move(line));
@@ -573,6 +625,7 @@ void PlainTextLayout::reset_deferred_target() {
     deferred_warm_run_ = 0;
     deferred_warm_glyph_ = 0;
     deferred_warm_height_ = 0;
+    deferred_warm_rows_ = 0;
     deferred_warm_start_evictions_ = 0;
     deferred_warm_failed_ = false;
     deferred_warm_retry_count_ = 0;
@@ -607,13 +660,16 @@ bool PlainTextLayout::build_future_screen_step(std::string& error) {
     if (!build_line(pending_screen_.next_offset, line, eof, error)) {
         return false;
     }
+    observe_auto_line_metrics(line);
     ++incremental_layout_steps_;
     pending_screen_.next_offset = safe_line_end(line);
     pending_screen_height_ += line_advance_px(line);
     pending_screen_.lines.push_back(std::move(line));
     pending_screen_.eof = eof;
 
-    if (pending_screen_height_ >= viewport_height_ || eof) {
+    if (pending_screen_height_ >=
+            screen_cache_target_height(signature_, viewport_height_) ||
+        eof) {
         screens_.push_back(std::move(pending_screen_));
         reset_pending_screen();
     }
@@ -656,14 +712,37 @@ std::uint32_t PlainTextLayout::visible_source_end() const {
     if (screens_.empty()) return 0;
     std::size_t screen = current_screen_;
     std::size_t line = current_line_;
-    int y = 0;
     std::uint32_t end = current_source_offset();
-    while (screen < screens_.size() && y < viewport_height_) {
+    if (auto_page_fit()) {
+        std::size_t rows = 0;
+        while (screen < screens_.size() &&
+               rows < auto_rows_per_page_) {
+            const Screen& item = screens_[screen];
+            while (line < item.lines.size() &&
+                   rows < auto_rows_per_page_) {
+                end = std::max(end, line_end(screen, line));
+                ++line;
+                ++rows;
+            }
+            ++screen;
+            line = 0;
+        }
+        return end;
+    }
+
+    int y = 0;
+    bool viewport_filled = false;
+    while (screen < screens_.size() && !viewport_filled) {
         const Screen& item = screens_[screen];
-        while (line < item.lines.size() && y < viewport_height_) {
+        while (line < item.lines.size() && !viewport_filled) {
             end = std::max(end, line_end(screen, line));
-            y += line_advance_px(item.lines[line]);
+            const LayoutLine& layout_line = item.lines[line];
+            const int ink_bottom = line_ink_bottom_px(layout_line, y);
+            y += line_advance_px(layout_line);
             ++line;
+            viewport_filled = bottom_align_visible_rows_
+                                  ? ink_bottom >= viewport_height_
+                                  : y >= viewport_height_;
         }
         ++screen;
         line = 0;
@@ -750,6 +829,7 @@ bool PlainTextLayout::move_line(int direction, std::string& error) {
     reset_deferred_target();
     current_screen_ = screen;
     current_line_ = line;
+    bottom_align_visible_rows_ = direction > 0;
     page_start_offsets_.clear();
     pixel_scroll_remainder_ = 0;
     trim_screen_window();
@@ -786,6 +866,24 @@ bool PlainTextLayout::find_forward_page_target(
             return true;
         };
 
+    if (auto_page_fit()) {
+        std::size_t screen = current_screen_;
+        std::size_t line = current_line_;
+        for (std::size_t row = 1; row < auto_rows_per_page_; ++row) {
+            if (!advance_cached(screen, line)) {
+                needs_more_layout = !screens_.back().eof;
+                return false;
+            }
+        }
+        if (!advance_cached(screen, line)) {
+            needs_more_layout = !screens_.back().eof;
+            return false;
+        }
+        if (line_offset(screen, line) <= current_source_offset()) return false;
+        result = {screen, line};
+        return true;
+    }
+
     struct Position {
         std::size_t screen = 0;
         std::size_t line = 0;
@@ -797,14 +895,18 @@ bool PlainTextLayout::find_forward_page_target(
     int y = 0;
     Position target;
     bool found_visible = false;
-    while (y < viewport_height_ && screen < screens_.size()) {
+    while (screen < screens_.size()) {
         if (line >= screens_[screen].lines.size()) return false;
         const LayoutLine& item = screens_[screen].lines[line];
         const int advance = line_advance_px(item);
         target = {screen, line, y, y + advance};
         found_visible = true;
+        const int ink_bottom = line_ink_bottom_px(item, y);
         y += advance;
-        if (y >= viewport_height_) break;
+        const bool viewport_filled = bottom_align_visible_rows_
+                                         ? ink_bottom >= viewport_height_
+                                         : y >= viewport_height_;
+        if (viewport_filled) break;
         if (!advance_cached(screen, line)) {
             needs_more_layout = !screens_.back().eof;
             if (needs_more_layout) return false;
@@ -813,9 +915,10 @@ bool PlainTextLayout::find_forward_page_target(
     }
     if (!found_visible) return false;
 
-    const int visible_height =
-        std::max(0, viewport_height_ - target.top);
     const int line_height = std::max(1, target.bottom - target.top);
+    const int visible_height = bottom_align_visible_rows_
+                                   ? line_height
+                                   : std::max(0, viewport_height_ - target.top);
     if (visible_height * 100 >= line_height * kMostlyVisiblePercent) {
         std::size_t following_screen = target.screen;
         std::size_t following_line = target.line;
@@ -844,6 +947,22 @@ bool PlainTextLayout::cached_viewport_ready(
     }
     std::size_t screen = target.screen;
     std::size_t line = target.line;
+    if (auto_page_fit()) {
+        for (std::size_t row = 1; row < auto_rows_per_page_; ++row) {
+            if (line + 1 < screens_[screen].lines.size()) {
+                ++line;
+                continue;
+            }
+            if (screen + 1 >= screens_.size()) {
+                return screens_.back().eof;
+            }
+            ++screen;
+            line = 0;
+            if (screens_[screen].lines.empty()) return false;
+        }
+        return true;
+    }
+
     int height = 0;
     while (screen < screens_.size()) {
         if (line >= screens_[screen].lines.size()) return false;
@@ -881,6 +1000,7 @@ bool PlainTextLayout::page_glyphs_preloaded(
     std::size_t screen = target.screen;
     std::size_t line = target.line;
     int height = 0;
+    std::size_t rows = 0;
     while (screen < screens_.size()) {
         const Screen& item = screens_[screen];
         if (line >= item.lines.size() ||
@@ -888,7 +1008,11 @@ bool PlainTextLayout::page_glyphs_preloaded(
             return false;
         }
         height += line_advance_px(item.lines[line]);
-        if (height >= viewport_height_) return resident_if_needed();
+        ++rows;
+        if (auto_page_fit() ? rows >= auto_rows_per_page_
+                            : height >= viewport_height_) {
+            return resident_if_needed();
+        }
         if (line + 1 < item.lines.size()) {
             ++line;
             continue;
@@ -912,6 +1036,7 @@ bool PlainTextLayout::page_glyphs_cached(
     std::size_t screen = target.screen;
     std::size_t line = target.line;
     int height = 0;
+    std::size_t rows = 0;
     while (screen < screens_.size()) {
         const Screen& item = screens_[screen];
         if (line >= item.lines.size()) return false;
@@ -922,7 +1047,11 @@ bool PlainTextLayout::page_glyphs_cached(
             }
         }
         height += line_advance_px(layout_line);
-        if (height >= viewport_height_) return true;
+        ++rows;
+        if (auto_page_fit() ? rows >= auto_rows_per_page_
+                            : height >= viewport_height_) {
+            return true;
+        }
         if (line + 1 < item.lines.size()) {
             ++line;
             continue;
@@ -970,6 +1099,7 @@ void PlainTextLayout::rewind_deferred_warm_cursor() {
     deferred_warm_run_ = 0;
     deferred_warm_glyph_ = 0;
     deferred_warm_height_ = 0;
+    deferred_warm_rows_ = 0;
     deferred_warm_start_evictions_ =
         text_ == nullptr ? 0 : text_->cache_stats().evictions;
     deferred_warm_failed_ = false;
@@ -1017,6 +1147,7 @@ bool PlainTextLayout::move_page_now(int direction,
                 !rebuild_at(target, error)) {
                 return false;
             }
+            bottom_align_visible_rows_ = false;
             approximate_page_ = std::max(1, approximate_page_ - 1);
             return true;
         }
@@ -1028,8 +1159,11 @@ bool PlainTextLayout::move_page_now(int direction,
         // avoids leaving only that region's final line at the top of the page.
         const std::uint32_t before = current_source_offset();
         int traversed_height = 0;
+        std::size_t traversed_rows = 0;
         bool moved = false;
-        while (traversed_height < viewport_height_) {
+        while (auto_page_fit()
+                   ? traversed_rows < auto_rows_per_page_
+                   : traversed_height < viewport_height_) {
             if (!move_line(-1, error)) {
                 if (!error.empty()) return false;
                 break;
@@ -1040,9 +1174,11 @@ bool PlainTextLayout::move_page_now(int direction,
             }
             traversed_height += line_advance_px(
                 screens_[current_screen_].lines[current_line_]);
+            ++traversed_rows;
             moved = true;
         }
         if (!moved || current_source_offset() >= before) return false;
+        bottom_align_visible_rows_ = false;
         approximate_page_ = std::max(1, approximate_page_ - 1);
         pixel_scroll_remainder_ = 0;
         trim_screen_window();
@@ -1078,6 +1214,9 @@ bool PlainTextLayout::move_page_now(int direction,
     page_start_offsets_.push_back(old_start);
     current_screen_ = target.screen;
     current_line_ = target.line;
+    // Page Down always starts with a complete top row. Bottom alignment is a
+    // one-line Down affordance and must not leak into screen-sized movement.
+    bottom_align_visible_rows_ = false;
     ++approximate_page_;
     pixel_scroll_remainder_ = 0;
     trim_screen_window();
@@ -1260,8 +1399,10 @@ bool PlainTextLayout::seek_source(std::uint32_t source_offset,
         1, static_cast<int>(
                static_cast<std::uint64_t>(aligned) * 100 /
                std::max<std::uint32_t>(1, source_size_)));
-    if (set_cached_position(aligned)) return true;
-    return rebuild_at(aligned, error);
+    const bool moved = set_cached_position(aligned) ||
+                       rebuild_at(aligned, error);
+    if (moved) bottom_align_visible_rows_ = true;
+    return moved;
 }
 
 bool PlainTextLayout::seek_percentage(unsigned percentage,
@@ -1291,7 +1432,10 @@ bool PlainTextLayout::seek_percentage(unsigned percentage,
         if (screens_[screen].lines.empty()) return false;
         std::size_t line = screens_[screen].lines.size() - 1;
         int visible_height = line_advance_px(screens_[screen].lines[line]);
-        while (visible_height < viewport_height_) {
+        std::size_t visible_rows = 1;
+        while (auto_page_fit()
+                   ? visible_rows < auto_rows_per_page_
+                   : visible_height < viewport_height_) {
             std::size_t previous_screen = screen;
             std::size_t previous_line = line;
             if (previous_line != 0) {
@@ -1305,13 +1449,18 @@ bool PlainTextLayout::seek_percentage(unsigned percentage,
             const int previous_height =
                 line_advance_px(
                     screens_[previous_screen].lines[previous_line]);
-            if (visible_height + previous_height > viewport_height_) break;
+            if (!auto_page_fit() &&
+                visible_height + previous_height > viewport_height_) {
+                break;
+            }
             screen = previous_screen;
             line = previous_line;
             visible_height += previous_height;
+            ++visible_rows;
         }
         current_screen_ = screen;
         current_line_ = line;
+        bottom_align_visible_rows_ = true;
         approximate_page_ = 100;
         pixel_scroll_remainder_ = 0;
         trim_screen_window();
@@ -1329,18 +1478,89 @@ std::vector<PlainTextVisibleLine> PlainTextLayout::visible_lines(
     if (screens_.empty()) return result;
     std::size_t screen = current_screen_;
     std::size_t line = current_line_;
+    if (auto_page_fit()) {
+        while (screen < screens_.size() &&
+               result.size() < auto_rows_per_page_) {
+            if (line >= screens_[screen].lines.size()) {
+                ++screen;
+                line = 0;
+                continue;
+            }
+            result.push_back({&screens_[screen].lines[line], 0});
+            ++line;
+        }
+        if (result.empty()) return result;
+
+        if (result.size() == auto_rows_per_page_ && result.size() > 1) {
+            int total_ink_height = 0;
+            for (const PlainTextVisibleLine& positioned : result) {
+                total_ink_height += line_ink_height_px(*positioned.line);
+            }
+            if (total_ink_height <= viewport_height_) {
+                const int total_gap = viewport_height_ - total_ink_height;
+                const int gap_count = static_cast<int>(result.size() - 1);
+                int y = 0;
+                int distributed_gap = 0;
+                for (std::size_t index = 0; index < result.size(); ++index) {
+                    const LayoutLine& item = *result[index].line;
+                    result[index].baseline_y = y + fx_ceil(item.ascent);
+                    y += line_ink_height_px(item);
+                    if (index + 1 < result.size()) {
+                        const int next_distributed_gap =
+                            static_cast<int>((index + 1) * total_gap /
+                                             gap_count);
+                        y += next_distributed_gap - distributed_gap;
+                        distributed_gap = next_distributed_gap;
+                    }
+                }
+                return result;
+            }
+        }
+
+        // A short final page is not stretched to the bottom. Keep its natural
+        // Auto leading and leave the unavoidable remainder after EOF.
+        int y = 0;
+        for (PlainTextVisibleLine& positioned : result) {
+            positioned.baseline_y =
+                y + fx_ceil(positioned.line->ascent);
+            y += line_advance_px(*positioned.line);
+        }
+        return result;
+    }
+
     int y = 0;
-    while (y < viewport_height_ && screen < screens_.size()) {
+    int last_ink_bottom = 0;
+    bool viewport_filled = false;
+    while (!viewport_filled && screen < screens_.size()) {
         if (line >= screens_[screen].lines.size()) {
             ++screen;
             line = 0;
             continue;
         }
         const LayoutLine& item = screens_[screen].lines[line];
+        const int advance = line_advance_px(item);
+        const int baseline = y + fx_ceil(item.ascent);
         result.push_back(
-            {&item, y + fx_ceil(item.ascent)});
-        y += line_advance_px(item);
+            {&item, baseline});
+        last_ink_bottom = line_ink_bottom_px(item, y);
+        y += advance;
         ++line;
+        viewport_filled = bottom_align_visible_rows_
+                              ? last_ink_bottom >= viewport_height_
+                              : y >= viewport_height_;
+    }
+    // Bottom-aligned line steps continue until visible text reaches the bottom,
+    // then shift by only the ink overflow. This clips the first row as needed
+    // while placing the final row's descent on the physical bottom, without
+    // exposing its trailing line gap. Page and upward destinations keep the
+    // first row at y=0. Both paths remain local to the bounded screen cache.
+    const int top_clip = bottom_align_visible_rows_
+                             ? std::max(0, last_ink_bottom - viewport_height_)
+                             : 0;
+    if (top_clip != 0) {
+        for (PlainTextVisibleLine& positioned : result) {
+            positioned.baseline_y -= top_clip;
+        }
     }
     return result;
 }
@@ -1397,10 +1617,13 @@ std::size_t PlainTextLayout::preload_deferred_page_glyphs(
             screen.lines[deferred_warm_line_];
         if (deferred_warm_run_ >= line.runs.size()) {
             deferred_warm_height_ += line_advance_px(line);
+            ++deferred_warm_rows_;
             ++deferred_warm_line_;
             deferred_warm_run_ = 0;
             deferred_warm_glyph_ = 0;
-            if (deferred_warm_height_ >= viewport_height_) {
+            if (auto_page_fit()
+                    ? deferred_warm_rows_ >= auto_rows_per_page_
+                    : deferred_warm_height_ >= viewport_height_) {
                 finish_deferred_warm_pass();
             }
             continue;

@@ -1,0 +1,121 @@
+#ifndef NMARKDOWN_TEST_FAKE_LIBNDLS_H
+#define NMARKDOWN_TEST_FAKE_LIBNDLS_H
+
+#include <cstdint>
+
+using BOOL = int;
+
+enum tpad_arrow_t {
+    TPAD_ARROW_NONE,
+    TPAD_ARROW_UP,
+    TPAD_ARROW_UPRIGHT,
+    TPAD_ARROW_RIGHT,
+    TPAD_ARROW_RIGHTDOWN,
+    TPAD_ARROW_DOWN,
+    TPAD_ARROW_DOWNLEFT,
+    TPAD_ARROW_LEFT,
+    TPAD_ARROW_LEFTUP,
+    TPAD_ARROW_CLICK,
+};
+
+struct t_key {
+    int id;
+    tpad_arrow_t tpad_arrow = TPAD_ARROW_NONE;
+    int row = 0;
+    int col = 0;
+    int tpad_row = 0;
+    int tpad_col = 0;
+};
+
+struct touchpad_report_t {
+    unsigned char contact = 0;
+    unsigned char proximity = 0;
+    std::uint16_t x = 0;
+    std::uint16_t y = 0;
+    unsigned char x_velocity = 0;
+    unsigned char y_velocity = 0;
+    std::uint16_t dummy = 0;
+    unsigned char pressed = 0;
+    unsigned char arrow = TPAD_ARROW_NONE;
+};
+
+struct touchpad_info_t {
+    std::uint16_t width = 0;
+    std::uint16_t height = 0;
+};
+
+BOOL nmarkdown_test_is_key_pressed(const t_key* key);
+BOOL _is_touchpad();
+int touchpad_scan(touchpad_report_t* report);
+touchpad_info_t* touchpad_getinfo();
+int enable_relative_paths(char** argv);
+void cfg_register_fileext(const char* extension, const char* program);
+const char* get_documents_dir();
+
+#define isKeyPressed(key) nmarkdown_test_is_key_pressed(&(key))
+#define is_touchpad _is_touchpad()
+#define is_cx2 1
+
+#define NMARKDOWN_FAKE_KEY(name, value) \
+    inline constexpr t_key name{value, TPAD_ARROW_NONE}
+
+NMARKDOWN_FAKE_KEY(KEY_NSPIRE_ESC, 1);
+NMARKDOWN_FAKE_KEY(KEY_NSPIRE_DOC, 2);
+NMARKDOWN_FAKE_KEY(KEY_NSPIRE_MENU, 3);
+NMARKDOWN_FAKE_KEY(KEY_NSPIRE_ENTER, 4);
+inline constexpr t_key KEY_NSPIRE_CLICK{5, TPAD_ARROW_CLICK};
+NMARKDOWN_FAKE_KEY(KEY_NSPIRE_CTRL, 6);
+NMARKDOWN_FAKE_KEY(KEY_NSPIRE_F, 7);
+NMARKDOWN_FAKE_KEY(KEY_NSPIRE_T, 8);
+NMARKDOWN_FAKE_KEY(KEY_NSPIRE_D, 9);
+NMARKDOWN_FAKE_KEY(KEY_NSPIRE_O, 10);
+NMARKDOWN_FAKE_KEY(KEY_NSPIRE_N, 11);
+NMARKDOWN_FAKE_KEY(KEY_NSPIRE_B, 12);
+NMARKDOWN_FAKE_KEY(KEY_NSPIRE_DEL, 13);
+NMARKDOWN_FAKE_KEY(KEY_NSPIRE_PLUS, 14);
+NMARKDOWN_FAKE_KEY(KEY_NSPIRE_MINUS, 15);
+inline constexpr t_key KEY_NSPIRE_UP{16, TPAD_ARROW_UP};
+inline constexpr t_key KEY_NSPIRE_DOWN{17, TPAD_ARROW_DOWN};
+inline constexpr t_key KEY_NSPIRE_LEFT{18, TPAD_ARROW_LEFT};
+inline constexpr t_key KEY_NSPIRE_RIGHT{19, TPAD_ARROW_RIGHT};
+NMARKDOWN_FAKE_KEY(KEY_NSPIRE_SHIFT, 20);
+NMARKDOWN_FAKE_KEY(KEY_NSPIRE_SPACE, 21);
+NMARKDOWN_FAKE_KEY(KEY_NSPIRE_PERIOD, 22);
+NMARKDOWN_FAKE_KEY(KEY_NSPIRE_TAB, 23);
+NMARKDOWN_FAKE_KEY(KEY_NSPIRE_SCRATCHPAD, 24);
+
+NMARKDOWN_FAKE_KEY(KEY_NSPIRE_A, 30);
+NMARKDOWN_FAKE_KEY(KEY_NSPIRE_C, 32);
+NMARKDOWN_FAKE_KEY(KEY_NSPIRE_E, 34);
+NMARKDOWN_FAKE_KEY(KEY_NSPIRE_G, 36);
+NMARKDOWN_FAKE_KEY(KEY_NSPIRE_H, 37);
+NMARKDOWN_FAKE_KEY(KEY_NSPIRE_I, 38);
+NMARKDOWN_FAKE_KEY(KEY_NSPIRE_J, 39);
+NMARKDOWN_FAKE_KEY(KEY_NSPIRE_K, 40);
+NMARKDOWN_FAKE_KEY(KEY_NSPIRE_L, 41);
+NMARKDOWN_FAKE_KEY(KEY_NSPIRE_M, 42);
+NMARKDOWN_FAKE_KEY(KEY_NSPIRE_P, 45);
+NMARKDOWN_FAKE_KEY(KEY_NSPIRE_Q, 46);
+NMARKDOWN_FAKE_KEY(KEY_NSPIRE_R, 47);
+NMARKDOWN_FAKE_KEY(KEY_NSPIRE_S, 48);
+NMARKDOWN_FAKE_KEY(KEY_NSPIRE_U, 50);
+NMARKDOWN_FAKE_KEY(KEY_NSPIRE_V, 51);
+NMARKDOWN_FAKE_KEY(KEY_NSPIRE_W, 52);
+NMARKDOWN_FAKE_KEY(KEY_NSPIRE_X, 53);
+NMARKDOWN_FAKE_KEY(KEY_NSPIRE_Y, 54);
+NMARKDOWN_FAKE_KEY(KEY_NSPIRE_Z, 55);
+
+NMARKDOWN_FAKE_KEY(KEY_NSPIRE_0, 60);
+NMARKDOWN_FAKE_KEY(KEY_NSPIRE_1, 61);
+NMARKDOWN_FAKE_KEY(KEY_NSPIRE_2, 62);
+NMARKDOWN_FAKE_KEY(KEY_NSPIRE_3, 63);
+NMARKDOWN_FAKE_KEY(KEY_NSPIRE_4, 64);
+NMARKDOWN_FAKE_KEY(KEY_NSPIRE_5, 65);
+NMARKDOWN_FAKE_KEY(KEY_NSPIRE_6, 66);
+NMARKDOWN_FAKE_KEY(KEY_NSPIRE_7, 67);
+NMARKDOWN_FAKE_KEY(KEY_NSPIRE_8, 68);
+NMARKDOWN_FAKE_KEY(KEY_NSPIRE_9, 69);
+
+#undef NMARKDOWN_FAKE_KEY
+
+#endif

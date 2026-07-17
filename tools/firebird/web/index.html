@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>nMarkdown Firebird / Browser Comparison</title>
+    <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+    <main>
+        <header>
+            <p class="kicker">nMarkdown render harness</p>
+            <h1>Firebird and browser comparison</h1>
+            <p>The browser uses the same mixed Latin/CJK fixture and source-font outlines. Raster edges may differ; character gaps and wrapping should agree.</p>
+        </header>
+
+        <section class="comparison" aria-label="Side-by-side render comparison">
+            <figure>
+                <figcaption><b>Firebird</b><span>Captured CX II framebuffer</span></figcaption>
+                <canvas id="firebird" width="320" height="240"></canvas>
+            </figure>
+            <figure>
+                <figcaption><b>Browser</b><span>Canvas reference render</span></figcaption>
+                <canvas id="browser" width="320" height="240"></canvas>
+            </figure>
+        </section>
+
+        <section class="overlay-card">
+            <div class="overlay-heading">
+                <div><h2>Blend comparison</h2><p>Move toward Browser to reveal layout drift.</p></div>
+                <label>Browser <input id="blend" type="range" min="0" max="100" value="50"><output id="blend-value">50%</output></label>
+            </div>
+            <canvas id="overlay" width="320" height="240"></canvas>
+        </section>
+
+        <p id="status" role="status">Loading both 320 × 240 frames…</p>
+    </main>
+    <script type="module" src="/compare.js"></script>
+</body>
+</html>

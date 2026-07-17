@@ -1,0 +1,132 @@
+GCC ?= nspire-gcc
+GXX ?= nspire-g++
+GENZEHN ?= genzehn
+MAKE_PRG ?= make-prg
+.DEFAULT_GOAL := all
+
+BUILD_DIR ?= build/ndless
+TARGET_NAME ?= nmarkdown
+ZEHN_NAME ?= nMarkdown
+TARGET := $(BUILD_DIR)/$(TARGET_NAME)
+
+CXX_SOURCES := \
+	src/app/application.cpp \
+	src/app/viewer.cpp \
+	src/document/document_ir.cpp \
+	src/document/entity.cpp \
+	src/document/markdown.cpp \
+	src/document/search.cpp \
+	src/document/state.cpp \
+	src/document/text_encoding.cpp \
+	src/document/unicode.cpp \
+	src/document/utf8.cpp \
+	src/generated/core_font_pack.cpp \
+	src/generated/html_entities.cpp \
+	src/generated/core_math_font.cpp \
+	src/generated/unicode_tables.cpp \
+	src/layout/block_layout.cpp \
+	src/layout/fenwick.cpp \
+	src/layout/plain_text_layout.cpp \
+	src/math/math_atoms.cpp \
+	src/math/math_lexer.cpp \
+	src/math/math_layout.cpp \
+	src/math/math_macros.cpp \
+	src/math/math_parser.cpp \
+	src/math/math_system.cpp \
+	src/platform/stdio_files.cpp \
+	src/render/primitives.cpp \
+	src/render/surface565.cpp \
+	src/text/compositor.cpp \
+	src/text/font.cpp \
+	src/text/font_catalog.cpp \
+	src/text/font_pack.cpp \
+	src/text/glyph_cache.cpp \
+	src/text/harfbuzz_shaper.cpp \
+	src/text/text_renderer.cpp \
+	src/text/text_system.cpp \
+	src/platform/ndless/clock_ndless.cpp \
+	src/platform/ndless/display_ndless.cpp \
+	src/platform/ndless/input_ndless.cpp \
+	src/platform/ndless/main.cpp
+CXX_SOURCES += $(EXTRA_CXX_SOURCES)
+
+CXX_CC_SOURCES := third_party/harfbuzz/src/harfbuzz.cc
+C_SOURCES := \
+	third_party/freetype/src/base/ftsystem.c \
+	third_party/freetype/src/base/ftdebug.c \
+	third_party/freetype/src/base/ftinit.c \
+	third_party/freetype/src/base/ftbase.c \
+	third_party/freetype/src/base/ftbitmap.c \
+	third_party/freetype/src/base/ftmm.c \
+	third_party/freetype/src/sfnt/sfnt.c \
+	third_party/freetype/src/truetype/truetype.c \
+	third_party/freetype/src/cff/cff.c \
+	third_party/freetype/src/psaux/psaux.c \
+	third_party/freetype/src/pshinter/pshinter.c \
+	third_party/freetype/src/psnames/psnames.c \
+	third_party/freetype/src/smooth/smooth.c \
+	third_party/freetype/src/autofit/autofit.c \
+	third_party/md4c/md4c.c
+CXX_OBJECTS := $(CXX_SOURCES:%.cpp=$(BUILD_DIR)/%.o) \
+	$(CXX_CC_SOURCES:%.cc=$(BUILD_DIR)/%.o)
+C_OBJECTS := $(C_SOURCES:%.c=$(BUILD_DIR)/%.o)
+OBJECTS := $(CXX_OBJECTS) $(C_OBJECTS)
+
+CPPFLAGS := -Iinclude -Isrc/platform/ndless \
+	-Ithird_party/freetype/nmarkdown -Ithird_party/freetype/include \
+	-Ithird_party/md4c -Ithird_party/harfbuzz/src -DHB_TINY=1 \
+	-DNMARKDOWN_HARFBUZZ_MATH=1 -DNMARKDOWN_NDLESS=1
+CPPFLAGS += $(EXTRA_CPPFLAGS)
+CFLAGS := -std=c99 -Os -Wall -Wextra -marm -DFT2_BUILD_LIBRARY \
+	-ffunction-sections -fdata-sections -MMD -MP
+CXXFLAGS := -std=c++17 -Os -Wall -Wextra -Wpedantic -marm \
+	-ffunction-sections -fdata-sections -fexceptions -fno-rtti -MMD -MP
+# nspireio installs a full-screen console before C++ constructors and main().
+# nMarkdown owns the LCD and uses ordinary Ndless/newlib file syscalls, so that
+# startup side effect is both unnecessary and conflicts with the reader.
+LDFLAGS := -Wl,--gc-sections $(EXTRA_LDFLAGS)
+ZEHNFLAGS := --name "$(ZEHN_NAME)" --author "nMarkdown contributors" \
+	--version 1 --ndless-min 31 --ndless-rev-min 2004 \
+	--clickpad-support true --color-support true --uses-lcd-blit true --compress
+DEPENDENCIES := $(OBJECTS:.o=.d)
+FLAGS_STAMP := $(BUILD_DIR)/.build-flags
+
+-include $(DEPENDENCIES)
+
+.PHONY: all clean FORCE
+
+FORCE:
+
+$(FLAGS_STAMP): FORCE
+	@mkdir -p $(dir $@)
+	@printf '%s\n' 'CPPFLAGS=$(CPPFLAGS)' 'CFLAGS=$(CFLAGS)' \
+		'CXXFLAGS=$(CXXFLAGS)' 'LDFLAGS=$(LDFLAGS)' \
+		'ZEHNFLAGS=$(ZEHNFLAGS)' > $@.tmp
+	@if ! cmp -s $@.tmp $@; then mv $@.tmp $@; else rm -f $@.tmp; fi
+
+$(OBJECTS): $(FLAGS_STAMP)
+
+all: $(TARGET).tns
+
+$(BUILD_DIR)/%.o: %.cpp
+	@mkdir -p $(dir $@)
+	$(GXX) $(CPPFLAGS) $(CXXFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/%.o: %.cc
+	@mkdir -p $(dir $@)
+	$(GXX) $(CPPFLAGS) $(filter-out -Wall -Wextra -Wpedantic,$(CXXFLAGS)) -c $< -o $@
+
+$(BUILD_DIR)/%.o: %.c
+	@mkdir -p $(dir $@)
+	$(GCC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
+
+$(TARGET).elf: $(OBJECTS)
+	$(GXX) $^ -o $@ $(LDFLAGS)
+
+$(TARGET).tns: $(TARGET).elf
+	$(GENZEHN) --input $< --output $@.zehn $(ZEHNFLAGS)
+	$(MAKE_PRG) $@.zehn $@
+	@rm -f $@.zehn
+
+clean:
+	@rm -rf $(BUILD_DIR)

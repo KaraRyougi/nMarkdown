@@ -1,0 +1,32 @@
+diff --git a/qml/Touchpad.qml b/qml/Touchpad.qml
+--- a/qml/Touchpad.qml
++++ b/qml/Touchpad.qml
+@@ -121,6 +121,10 @@ Rectangle {
+             origY = mouse.y;
+             isDown = false;
+             clickOnHoldTimer.restart();
++            // Submit the contact origin immediately. Waiting for the first
++            // move lets a coalesced drag arrive with its endpoint as the
++            // initial touch sample, so the guest sees no displacement.
++            submitState();
+         }
+     }
+ }
+diff --git a/core/keypad.cpp b/core/keypad.cpp
+--- a/core/keypad.cpp
++++ b/core/keypad.cpp
+@@ -248,6 +248,14 @@ static uint32_t touchpad_read_page(uint32_t page, uint32_t index)
+                 keypad.touchpad_irq_state = 0x53; // Reading resets IRQs, those few bits are always active
+                 return ret;
+             }
++            // TI-OS performs an aligned 16-byte read of the report. These
++            // padding bytes have no modeled state; returning zero without
++            // logging avoids flooding the GUI debug QTextEdit on every poll.
++            case 0x0C:
++            case 0x0D:
++            case 0x0E:
++            case 0x0F:
++                return 0;
+             case 0xE4: return 1; // firmware version
+             case 0xE5: return 6; // firmware version
+             case 0xE6: return 0; // firmware version

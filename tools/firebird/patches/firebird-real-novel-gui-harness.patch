@@ -1,0 +1,220 @@
+diff --git a/mainwindow.h b/mainwindow.h
+--- a/mainwindow.h
++++ b/mainwindow.h
+@@ -118,6 +118,8 @@
+ 
+ private:
+     void setActive(bool b);
++    void processRealNovelGuiTestLine(const QString &line);
++    void scheduleRealNovelGuiTestSwipe();
+ 
+     void suspendToPath(QString path);
+     bool resumeFromPath(QString path);
+@@ -182,6 +184,11 @@
+ 
+     // Whether this MainWindow is in charge of communicating with EmuThread
+     bool is_active = false;
++
++    QString real_novel_gui_test_line;
++    int real_novel_gui_test_swipes_sent = 0;
++    int real_novel_gui_test_awaiting_visible = 0;
++    bool real_novel_gui_test_started = false;
+ };
+ 
+ // Used as global instance by EmuThread and friends
+diff --git a/mainwindow.cpp b/mainwindow.cpp
+--- a/mainwindow.cpp
++++ b/mainwindow.cpp
+@@ -1,4 +1,6 @@
+ #include <QFileDialog>
++#include <cstdlib>
++#include <cstdio>
+ #include <QStandardPaths>
+ #include <QTextBlock>
+ #include <QMessageBox>
+@@ -8,6 +10,8 @@
+ #include <QDockWidget>
+ #include <QShortcut>
+ #include <QQmlComponent>
++#include <QQuickItem>
++#include <QMouseEvent>
+ 
+ #include "core/debug.h"
+ #include "core/emu.h"
+@@ -318,6 +322,21 @@
+ 
+ void MainWindow::serialChar(const char c)
+ {
++    if(qEnvironmentVariableIsSet("FIREBIRD_REAL_NOVEL_GUI_TEST"))
++    {
++        std::fputc(static_cast<unsigned char>(c), stdout);
++        if(c == '\n')
++            std::fflush(stdout);
++
++        if(c != 0 && c != '\r')
++            real_novel_gui_test_line.append(QChar::fromLatin1(c));
++        if(c == '\n')
++        {
++            processRealNovelGuiTestLine(real_novel_gui_test_line);
++            real_novel_gui_test_line.clear();
++        }
++    }
++
+     ui->serialConsole->moveCursor(QTextCursor::End);
+ 
+     static char previous = 0;
+@@ -343,9 +362,143 @@
+                 previous = 0;
+             }
+             ui->serialConsole->insertPlainText(QChar::fromLatin1(c));
++    }
++}
++
++void MainWindow::processRealNovelGuiTestLine(const QString &line)
++{
++    if(!qEnvironmentVariableIsSet("FIREBIRD_REAL_NOVEL_GUI_TEST"))
++        return;
++
++    if(line.contains(QStringLiteral(
++            "NMARKDOWN_IT/1 REAL_NOVEL_PROGRESS_START")))
++    {
++        if(!real_novel_gui_test_started)
++        {
++            real_novel_gui_test_started = true;
++            std::puts("FIREBIRD_GUI_TEST/1 START");
++            std::fflush(stdout);
++            QTimer::singleShot(250, this,
++                               &MainWindow::scheduleRealNovelGuiTestSwipe);
++        }
++        return;
+     }
++
++    if(line.contains(QStringLiteral(
++            "NMARKDOWN_IT/1 REAL_NOVEL_VISIBLE")))
++    {
++        if(real_novel_gui_test_awaiting_visible != 0)
++        {
++            real_novel_gui_test_awaiting_visible = 0;
++            if(real_novel_gui_test_swipes_sent < 30)
++            {
++                QTimer::singleShot(
++                    250, this,
++                    &MainWindow::scheduleRealNovelGuiTestSwipe);
++            }
++        }
++        return;
++    }
++
++    if(line.contains(QStringLiteral(
++            "NMARKDOWN_IT/1 REAL_NOVEL_30_SWIPE_PASS")))
++    {
++        std::puts("FIREBIRD_GUI_TEST/1 PASS");
++        std::fflush(stdout);
++        // The test owns this process. Avoid Firebird's asynchronous emulator
++        // teardown racing Qt destruction after the final evidence is flushed.
++        QTimer::singleShot(500, []
++        {
++            std::_Exit(EXIT_SUCCESS);
++        });
++    }
+ }
+ 
++void MainWindow::scheduleRealNovelGuiTestSwipe()
++{
++    if(!real_novel_gui_test_started ||
++       real_novel_gui_test_swipes_sent >= 30 ||
++       real_novel_gui_test_awaiting_visible != 0)
++        return;
++
++    QQuickItem *root = ui->keypadWidget->rootObject();
++    QQuickItem *touchpad = root == nullptr
++        ? nullptr
++        : root->findChild<QQuickItem *>(
++              QStringLiteral("firebirdTouchpadMouseArea"));
++    if(touchpad == nullptr || touchpad->width() <= 0 ||
++       touchpad->height() <= 0)
++    {
++        std::puts("FIREBIRD_GUI_TEST/1 FAIL touchpad-object-not-found");
++        std::fflush(stdout);
++        QTimer::singleShot(0, []
++        {
++            std::_Exit(EXIT_FAILURE);
++        });
++        return;
++    }
++
++    const int swipe = ++real_novel_gui_test_swipes_sent;
++    real_novel_gui_test_awaiting_visible = swipe;
++    const QPointF start = touchpad->mapToScene(
++        QPointF(touchpad->width() * 0.5, touchpad->height() * 0.18));
++    const QPointF finish = touchpad->mapToScene(
++        QPointF(touchpad->width() * 0.5, touchpad->height() * 0.82));
++    QQuickWidget *widget = ui->keypadWidget;
++
++    const auto sendMouse = [widget](QEvent::Type type,
++                                    const QPointF &position,
++                                    Qt::MouseButton button,
++                                    Qt::MouseButtons buttons)
++    {
++        const QPoint global = widget->mapToGlobal(position.toPoint());
++        QMouseEvent event(type, position, QPointF(global), button, buttons,
++                          Qt::NoModifier);
++        QCoreApplication::sendEvent(widget, &event);
++    };
++
++    QTimer::singleShot(0, this, [sendMouse, start]
++    {
++        sendMouse(QEvent::MouseButtonPress, start, Qt::LeftButton,
++                  Qt::LeftButton);
++    });
++    constexpr int moveSteps = 8;
++    constexpr int moveIntervalMs = 40;
++    for(int step = 1; step <= moveSteps; ++step)
++    {
++        const qreal fraction =
++            static_cast<qreal>(step) / static_cast<qreal>(moveSteps);
++        const QPointF position =
++            start + (finish - start) * fraction;
++        QTimer::singleShot(step * moveIntervalMs, this,
++                           [sendMouse, position]
++        {
++            sendMouse(QEvent::MouseMove, position, Qt::NoButton,
++                      Qt::LeftButton);
++        });
++    }
++    QTimer::singleShot((moveSteps + 1) * moveIntervalMs, this,
++                       [sendMouse, finish, swipe]
++    {
++        sendMouse(QEvent::MouseButtonRelease, finish, Qt::LeftButton,
++                  Qt::NoButton);
++        std::printf("FIREBIRD_GUI_TEST/1 SWIPE_SENT count=%d\n", swipe);
++        std::fflush(stdout);
++    });
++
++    QTimer::singleShot(20000, this, [this, swipe]
++    {
++        if(real_novel_gui_test_awaiting_visible == swipe)
++        {
++            std::printf(
++                "FIREBIRD_GUI_TEST/1 FAIL visible-timeout swipe=%d\n",
++                swipe);
++            std::fflush(stdout);
++            std::_Exit(EXIT_FAILURE);
++        }
++    });
++}
++
+ void MainWindow::debugInputRequested(bool b)
+ {
+     switchUIMode(false);
+diff --git a/qml/Touchpad.qml b/qml/Touchpad.qml
+--- a/qml/Touchpad.qml
++++ b/qml/Touchpad.qml
+@@ -38,6 +38,7 @@ Rectangle {
+        Click and quick release -> Down
+        Click and move -> Contact */
+     MouseArea {
++        objectName: "firebirdTouchpadMouseArea"
+         anchors.rightMargin: 0
+         anchors.bottomMargin: 0
+         anchors.fill: parent

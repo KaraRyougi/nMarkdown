@@ -1,0 +1,40 @@
+{
+  "version": 1,
+  "faces": [
+    {
+      "id": 1,
+      "role": "body-sans",
+      "name": "DejaVu Sans UI",
+      "font": "fonts/DejaVuSans-UI.ttf",
+      "license": "fonts/LICENSE_DEJAVU",
+      "embed_license": false,
+      "ranges": [
+        ["U+0020", "U+007E"],
+        ["U+FFFD", "U+FFFD"]
+      ]
+    },
+    {
+      "id": 2,
+      "role": "monospace",
+      "name": "DejaVu Sans Mono UI",
+      "font": "fonts/DejaVuSansMono-UI.ttf",
+      "license": "fonts/LICENSE_DEJAVU",
+      "embed_license": false,
+      "ranges": [
+        ["U+0020", "U+007E"],
+        ["U+FFFD", "U+FFFD"]
+      ]
+    },
+    {
+      "id": 3,
+      "role": "math",
+      "name": "Latin Modern Math",
+      "font": "fonts/LatinModernMath-Core.otf",
+      "license": "fonts/LICENSE_LATIN_MODERN_MATH",
+      "embed_license": false,
+      "ranges": [
+        ["U+0000", "U+10FFFF"]
+      ]
+    }
+  ]
+}

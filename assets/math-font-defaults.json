@@ -1,0 +1,10 @@
+{
+  "axis_height": 0.25,
+  "fraction_rule": 0.0625,
+  "fraction_num_gap": 0.2,
+  "fraction_den_gap": 0.2,
+  "superscript_shift": 0.6,
+  "subscript_shift": 0.3,
+  "radical_rule": 0.0625,
+  "radical_gap": 0.15
+}

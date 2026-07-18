@@ -27,13 +27,15 @@ constexpr int kScreenWidth = 320;
 constexpr int kScreenHeight = 240;
 constexpr int kHeaderHeight = 18;
 constexpr int kBottomContentInset = 2;
-// The document owns the full screen height; the filename bar is a transient
-// overlay across the top kHeaderHeight rows that appears on upward
-// navigation and hides again while reading forward, so layout geometry
-// never changes with its visibility.
-constexpr int kViewportHeight = kScreenHeight - kBottomContentInset;
-constexpr std::size_t kMaximumScreenStepHistory = 32;
 constexpr int kProgressHeight = 2;
+// The document owns the screen; the filename bar is transient chrome that
+// appears on upward navigation and hides again while reading forward, so
+// layout geometry never changes with its visibility. The permanent reading
+// progress strip keeps a two-pixel margin to the first text line.
+constexpr int kTopContentInset = kProgressHeight + 2;
+constexpr int kViewportHeight =
+    kScreenHeight - kTopContentInset - kBottomContentInset;
+constexpr std::size_t kMaximumScreenStepHistory = 32;
 constexpr int kChromeX = 8;
 constexpr int kChromeBaseline = 15;
 constexpr int kChromeRightPadding = 6;
@@ -5204,13 +5206,21 @@ void Viewer::render(const Surface565& surface) {
     // presented frame and the retained base snapshot never see stale data.
     // Scroll geometry always uses the full-height kViewportHeight; a
     // visible bar only clips the bottom of the drawn window, so layout
-    // never reflows with bar visibility.
-    const int content_top = chrome_visible_ ? kHeaderHeight : 0;
+    // never reflows with bar visibility. With the bar hidden the content
+    // starts below the progress strip plus its two-pixel margin.
+    const int content_top = chrome_visible_ ? kHeaderHeight
+                                            : kTopContentInset;
     const Rect viewport{0, content_top, kScreenWidth,
-                        kViewportHeight - content_top};
+                        kScreenHeight - kBottomContentInset - content_top};
     render_document(surface, viewport);
+    if (!chrome_visible_) {
+        fill_rect(surface,
+                  {0, 0, kScreenWidth, kTopContentInset},
+                  colors.paper);
+    }
     fill_rect(surface,
-              {0, kViewportHeight, kScreenWidth, kBottomContentInset},
+              {0, kScreenHeight - kBottomContentInset,
+               kScreenWidth, kBottomContentInset},
               colors.paper);
 
 #if defined(NMARKDOWN_FIREBIRD_PROGRESS_FIXTURE)

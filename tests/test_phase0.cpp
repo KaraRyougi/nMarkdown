@@ -1090,7 +1090,7 @@ void test_vertical_and_horizontal_touchpad_modes() {
     const int keyed_step = viewer.scroll_y();
     // This synthetic probe has no line geometry to align against, so its
     // fallback screen step is exactly the 220 px document viewport.
-    CHECK(keyed_step == 238);
+    CHECK(keyed_step == 234);
     CHECK(viewer.handle_event({nmarkdown::InputEventType::PageUp, 0}));
     CHECK(viewer.scroll_y() == 0);
 

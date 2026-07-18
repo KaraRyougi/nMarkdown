@@ -950,6 +950,19 @@ void test_filename_bar_hides_forward_and_returns_upward() {
     viewer.render(surface);
     CHECK(pixels[10 * kWidth + 2] != header);
     CHECK(pixels[0 * kWidth + 319] == strip);
+    // Two clear margin rows separate the progress strip from the first
+    // text line while the bar is hidden.
+    const std::uint16_t hidden_paper = pixels[10 * kWidth + 2];
+    bool margin_clear = true;
+    for (int y = 2; y < 4; ++y) {
+        for (int x = 0; x < kWidth; ++x) {
+            margin_clear =
+                margin_clear &&
+                pixels[static_cast<std::size_t>(y) * kWidth + x] ==
+                    hidden_paper;
+        }
+    }
+    CHECK(margin_clear);
 
     CHECK(send(viewer, nmarkdown::InputEventType::ScrollLineUp));
     viewer.render(surface);
@@ -1486,7 +1499,7 @@ void test_line_down_aligns_the_last_visible_markdown_line() {
         int bottom = 0;
     };
     std::vector<LineBounds> lines;
-    constexpr int kViewportHeight = 238;
+    constexpr int kViewportHeight = 234;
     for (const nmarkdown::LayoutLine& line : block->lines) {
         const int top = nmarkdown::fx_floor(reference_layout.unit_top(0)) +
                         nmarkdown::fx_floor(line.baseline_y) -
@@ -1621,7 +1634,7 @@ void test_page_keys_land_on_complete_line_boundaries() {
         int bottom = 0;
     };
     std::vector<LineBounds> lines;
-    constexpr int kViewportHeight = 238;
+    constexpr int kViewportHeight = 234;
     for (const nmarkdown::LayoutLine& line : block->lines) {
         const int top = nmarkdown::fx_floor(reference_layout.unit_top(0)) +
                         nmarkdown::fx_floor(line.baseline_y) -
@@ -1719,6 +1732,9 @@ void test_page_keys_land_on_complete_line_boundaries() {
                 expected_page_up = std::max(expected_page_up, line.top);
             }
         }
+        // A prior screen within one line of the document top snaps to the
+        // exact start rather than a nearby line top.
+        if (mostly_visible_start < 18) expected_page_up = 0;
         CHECK(send(viewer, nmarkdown::InputEventType::PageUp));
         CHECK(viewer.scroll_y() == expected_page_up);
     }

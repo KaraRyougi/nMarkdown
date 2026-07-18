@@ -809,7 +809,11 @@ void test_settings_theme_repaint_stays_responsive() {
     probe.size = source.size();
     nmarkdown::Viewer viewer;
     CHECK(viewer.set_markdown_document(std::move(document), probe, error));
+    // A net downward step followed by one step up leaves the reader scrolled
+    // with the auto-hiding title bar revealed for the header assertions.
     CHECK(viewer.handle_event({nmarkdown::InputEventType::ScrollLineDown, 0}));
+    CHECK(viewer.handle_event({nmarkdown::InputEventType::ScrollLineDown, 0}));
+    CHECK(viewer.handle_event({nmarkdown::InputEventType::ScrollLineUp, 0}));
     const int initial_scroll = viewer.scroll_y();
     CHECK(initial_scroll > 0);
 
@@ -849,7 +853,11 @@ void test_settings_theme_repaint_stays_responsive() {
     viewer.render(surface);
     CHECK(surface.pixel(0, 2) == nmarkdown::rgb565(12, 27, 48));
     CHECK(surface.pixel(0, 20) == nmarkdown::rgb565(29, 35, 45));
+    // Net downward movement with a final upward step keeps the auto-hiding
+    // title bar revealed for the header assertions below.
     CHECK(viewer.handle_event({nmarkdown::InputEventType::ScrollLineDown, 0}));
+    CHECK(viewer.handle_event({nmarkdown::InputEventType::ScrollLineDown, 0}));
+    CHECK(viewer.handle_event({nmarkdown::InputEventType::ScrollLineUp, 0}));
     const int scrolled_after_toggle = viewer.scroll_y();
     CHECK(scrolled_after_toggle > initial_scroll);
     CHECK(viewer.handle_event({nmarkdown::InputEventType::OpenSettings, 0}));
@@ -1082,7 +1090,7 @@ void test_vertical_and_horizontal_touchpad_modes() {
     const int keyed_step = viewer.scroll_y();
     // This synthetic probe has no line geometry to align against, so its
     // fallback screen step is exactly the 220 px document viewport.
-    CHECK(keyed_step == 220);
+    CHECK(keyed_step == 238);
     CHECK(viewer.handle_event({nmarkdown::InputEventType::PageUp, 0}));
     CHECK(viewer.scroll_y() == 0);
 

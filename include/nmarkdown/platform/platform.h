@@ -34,6 +34,7 @@ enum class InputEventType : std::uint8_t {
     OpenDocument,
     SearchNext,
     ToggleBookmark,
+    OpenBookmarks,
     TextInput,
     Backspace,
     IncreaseFont,

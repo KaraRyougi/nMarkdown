@@ -27,6 +27,7 @@ private:
         OpenDocument,
         SearchNext,
         Bookmark,
+        Catalog,
         Character,
         Delete,
         Plus,

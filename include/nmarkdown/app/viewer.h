@@ -264,6 +264,9 @@ private:
     bool natural_swiping_ = true;
     bool resident_font_preload_ = true;
     bool pending_font_preload_save_request_ = false;
+    // The filename bar overlays the top of the full-height document view:
+    // upward navigation reveals it, reading forward hides it.
+    bool chrome_visible_ = true;
     RenderSharpness render_sharpness_ = kDefaultRenderSharpness;
     struct ScreenStepPosition {
         int from = 0;

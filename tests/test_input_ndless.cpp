@@ -132,6 +132,14 @@ void test_idle_poll_uses_one_touchpad_snapshot() {
     CHECK(touchpad_scan_calls == 2);
 }
 
+void test_catalog_key_opens_bookmarks() {
+    release_all();
+    FakeClock clock;
+    nmarkdown::InputNdless input(clock);
+    press(KEY_NSPIRE_CAT);
+    expect_event(input, nmarkdown::InputEventType::OpenBookmarks);
+}
+
 void test_production_menu_and_document_shortcuts() {
     FakeClock clock;
 
@@ -675,6 +683,7 @@ int main() {
     test_direct_escape_to_navigation_transition_stays_live();
     test_ctrl_escape_can_replace_held_escape();
     test_idle_poll_uses_one_touchpad_snapshot();
+    test_catalog_key_opens_bookmarks();
     test_production_menu_and_document_shortcuts();
     test_reader_navigation_key_aliases();
     test_backlight_chords_are_left_to_the_system();

@@ -810,6 +810,9 @@ void test_deferred_plain_text_page_marks_viewer_dirty() {
     nmarkdown::Viewer viewer;
     CHECK(load_plain_text(viewer, std::move(source)));
     viewer.set_reading_mode(nmarkdown::ReadingMode::HorizontalScroll);
+    // Hide the auto-hiding title bar first so the deferral checks below see
+    // only page-motion dirtiness.
+    send(viewer, nmarkdown::InputEventType::ScrollLineDown);
 
     bool deferred = false;
     std::uint32_t deferred_from = 0;
@@ -866,6 +869,9 @@ void test_plain_text_rewarms_after_glyph_cache_clear() {
     // next gesture, so mirror that lifecycle here; the assertion below then
     // isolates readiness of the deferred target page.
     viewer.render(surface);
+    // Hide the auto-hiding title bar so the deferred page below cannot
+    // repaint for chrome reasons.
+    send(viewer, nmarkdown::InputEventType::ScrollLineDown);
     const std::uint32_t before =
         viewer.reader_state(0).position.source_offset;
     viewer.clear_dirty();
@@ -922,6 +928,69 @@ void test_render_sharpness_setting_is_key_only_and_persisted() {
 // Opening a CJK document with no CJK-role font asks the user to pick one:
 // Enter on the prompt requests the font manager, Esc continues without and
 // the passive once-per-session behavior is retained.
+// The filename bar hides while reading forward and returns on any upward
+// step; the two-pixel reading-progress strip stays visible in both states.
+void test_filename_bar_hides_forward_and_returns_upward() {
+    current_case = "auto-hiding filename bar";
+    nmarkdown::Viewer viewer;
+    std::string source;
+    for (int index = 0; index < 40; ++index) {
+        source += "Paragraph body line keeps the reader scrollable.\n\n";
+    }
+    CHECK(load_markdown(viewer, source));
+    constexpr int kWidth = 320;
+    constexpr int kHeight = 240;
+    std::vector<std::uint16_t> pixels(kWidth * kHeight, 0);
+    nmarkdown::Surface565 surface(pixels.data(), kWidth, kHeight, kWidth);
+    viewer.render(surface);
+    const std::uint16_t header = pixels[10 * kWidth + 2];
+    const std::uint16_t strip = pixels[0 * kWidth + 319];
+
+    CHECK(send(viewer, nmarkdown::InputEventType::ScrollLineDown));
+    viewer.render(surface);
+    CHECK(pixels[10 * kWidth + 2] != header);
+    CHECK(pixels[0 * kWidth + 319] == strip);
+
+    CHECK(send(viewer, nmarkdown::InputEventType::ScrollLineUp));
+    viewer.render(surface);
+    CHECK(pixels[10 * kWidth + 2] == header);
+    CHECK(pixels[0 * kWidth + 319] == strip);
+}
+
+// The Catalog key opens the bookmark list directly: Enter jumps to the
+// selected bookmark, and a second press of the key closes the list again.
+void test_catalog_bookmark_menu_jumps_and_toggles() {
+    current_case = "catalog bookmark menu";
+    nmarkdown::Viewer viewer;
+    std::string source;
+    for (int index = 0; index < 60; ++index) {
+        source += "Bookmark paragraph " + std::to_string(index) +
+                  " body.\n\n";
+    }
+    CHECK(load_markdown(viewer, source));
+    for (int step = 0; step < 6; ++step) {
+        CHECK(send(viewer, nmarkdown::InputEventType::ScrollLineDown));
+    }
+    const int marked_scroll = viewer.scroll_y();
+    CHECK(marked_scroll > 0);
+    CHECK(send(viewer, nmarkdown::InputEventType::ToggleBookmark));
+    CHECK(send(viewer, nmarkdown::InputEventType::PageDown));
+    CHECK(send(viewer, nmarkdown::InputEventType::PageDown));
+    const int deep_scroll = viewer.scroll_y();
+    CHECK(deep_scroll > marked_scroll);
+
+    CHECK(send(viewer, nmarkdown::InputEventType::OpenBookmarks));
+    CHECK(send(viewer, nmarkdown::InputEventType::Activate));
+    CHECK(viewer.scroll_y() < deep_scroll);
+    CHECK(viewer.scroll_y() <= marked_scroll);
+
+    CHECK(send(viewer, nmarkdown::InputEventType::OpenBookmarks));
+    CHECK(send(viewer, nmarkdown::InputEventType::OpenBookmarks));
+    const int after_close = viewer.scroll_y();
+    CHECK(send(viewer, nmarkdown::InputEventType::ScrollLineDown));
+    CHECK(viewer.scroll_y() > after_close);
+}
+
 void test_missing_cjk_font_prompt_offers_font_manager() {
     current_case = "missing CJK font prompt";
     {
@@ -1417,7 +1486,7 @@ void test_line_down_aligns_the_last_visible_markdown_line() {
         int bottom = 0;
     };
     std::vector<LineBounds> lines;
-    constexpr int kViewportHeight = 220;
+    constexpr int kViewportHeight = 238;
     for (const nmarkdown::LayoutLine& line : block->lines) {
         const int top = nmarkdown::fx_floor(reference_layout.unit_top(0)) +
                         nmarkdown::fx_floor(line.baseline_y) -
@@ -1552,7 +1621,7 @@ void test_page_keys_land_on_complete_line_boundaries() {
         int bottom = 0;
     };
     std::vector<LineBounds> lines;
-    constexpr int kViewportHeight = 220;
+    constexpr int kViewportHeight = 238;
     for (const nmarkdown::LayoutLine& line : block->lines) {
         const int top = nmarkdown::fx_floor(reference_layout.unit_top(0)) +
                         nmarkdown::fx_floor(line.baseline_y) -
@@ -1797,6 +1866,8 @@ int main() {
     test_deferred_plain_text_page_marks_viewer_dirty();
     test_plain_text_rewarms_after_glyph_cache_clear();
     test_render_sharpness_setting_is_key_only_and_persisted();
+    test_filename_bar_hides_forward_and_returns_upward();
+    test_catalog_bookmark_menu_jumps_and_toggles();
     test_missing_cjk_font_prompt_offers_font_manager();
     test_system_lists_wrap_at_both_ends();
     test_font_preload_setting_toggles_and_requests_save();

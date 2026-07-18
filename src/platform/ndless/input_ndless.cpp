@@ -132,6 +132,11 @@ InputNdless::PhysicalKey InputNdless::pressed_key(std::uint32_t& character,
     if (isKeyPressed(KEY_NSPIRE_CTRL) && isKeyPressed(KEY_NSPIRE_B)) {
         return PhysicalKey::Bookmark;
     }
+    // The Catalog key carries the book glyph, so it opens the bookmark
+    // management list. Ctrl+B remains the toggle shortcut.
+    if (isKeyPressed(KEY_NSPIRE_CAT)) {
+        return PhysicalKey::Catalog;
+    }
     if (isKeyPressed(KEY_NSPIRE_SCRATCHPAD)) {
         return PhysicalKey::Scratchpad;
     }
@@ -276,6 +281,8 @@ InputEvent InputNdless::semantic_event(PhysicalKey key,
         return {InputEventType::SearchNext, 0};
     case PhysicalKey::Bookmark:
         return {InputEventType::ToggleBookmark, 0};
+    case PhysicalKey::Catalog:
+        return {InputEventType::OpenBookmarks, 0};
     case PhysicalKey::Character:
         return {InputEventType::TextInput, static_cast<int>(character)};
     case PhysicalKey::Delete:

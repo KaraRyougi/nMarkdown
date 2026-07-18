@@ -27,8 +27,11 @@ constexpr int kScreenWidth = 320;
 constexpr int kScreenHeight = 240;
 constexpr int kHeaderHeight = 18;
 constexpr int kBottomContentInset = 2;
-constexpr int kBodyHeight = kScreenHeight - kHeaderHeight;
-constexpr int kViewportHeight = kBodyHeight - kBottomContentInset;
+// The document owns the full screen height; the filename bar is a transient
+// overlay across the top kHeaderHeight rows that appears on upward
+// navigation and hides again while reading forward, so layout geometry
+// never changes with its visibility.
+constexpr int kViewportHeight = kScreenHeight - kBottomContentInset;
 constexpr std::size_t kMaximumScreenStepHistory = 32;
 constexpr int kProgressHeight = 2;
 constexpr int kChromeX = 8;
@@ -1457,6 +1460,7 @@ bool Viewer::take_font_menu_request() {
 }
 
 void Viewer::activate_search_result(std::size_t index) {
+    chrome_visible_ = true;
     if (index >= search_results_.size()) return;
     invalidate_retained_base_frame();
     search_selected_ = index;
@@ -2163,6 +2167,7 @@ bool Viewer::set_markdown_document(std::unique_ptr<MarkdownDocument> document,
     focused_code_layout_ = {};
     focused_code_layout_valid_ = false;
     pending_final_page_restore_ = false;
+    chrome_visible_ = true;
     if (!cjk_font_hint_shown_ &&
         text_.external_font_id(FontRole::Cjk) == 0 &&
         [&]() {
@@ -2242,6 +2247,7 @@ bool Viewer::set_plain_text_document(
     focused_code_layout_ = {};
     focused_code_layout_valid_ = false;
     pending_final_page_restore_ = false;
+    chrome_visible_ = true;
     if (!cjk_font_hint_shown_ &&
         text_.external_font_id(FontRole::Cjk) == 0 &&
         plain_text_layout_.initial_cache_contains_cjk()) {
@@ -2698,6 +2704,7 @@ bool Viewer::jump_to_percentage(unsigned percentage) {
     }
     invalidate_retained_base_frame();
     has_active_search_match_ = false;
+    chrome_visible_ = true;
     dirty_ = true;
     return true;
 }
@@ -2996,6 +3003,7 @@ bool Viewer::handle_event(const InputEvent& event) {
     const bool old_natural_scrolling = natural_scrolling_;
     const bool old_natural_swiping = natural_swiping_;
     const bool old_resident_font_preload = resident_font_preload_;
+    const bool old_chrome_visible = chrome_visible_;
     const RenderSharpness old_render_sharpness = render_sharpness_;
     const int old_max_scroll = max_scroll_y();
     const bool markdown_reflow = markdown_document_ != nullptr;
@@ -3527,12 +3535,14 @@ bool Viewer::handle_event(const InputEvent& event) {
         } else if (overlay_open_) {
             // Passive controls overlays consume document navigation.
         } else if (plain_text_layout_.loaded()) {
+            chrome_visible_ = true;
             std::string error;
             if (!plain_text_layout_.move_line(-1, error) &&
                 !error.empty()) {
                 show_message("TXT read error", error);
             }
         } else {
+            chrome_visible_ = true;
             move_markdown_line(-1);
         }
         break;
@@ -3551,17 +3561,20 @@ bool Viewer::handle_event(const InputEvent& event) {
         } else if (overlay_open_) {
             // Passive controls overlays consume document navigation.
         } else if (plain_text_layout_.loaded()) {
+            chrome_visible_ = false;
             std::string error;
             if (!plain_text_layout_.move_line(1, error) &&
                 !error.empty()) {
                 show_message("TXT read error", error);
             }
         } else {
+            chrome_visible_ = false;
             move_markdown_line(1);
         }
         break;
     case InputEventType::SwipeUp:
         if (!overlay_open_ && reading_mode_ == ReadingMode::HorizontalScroll) {
+            chrome_visible_ = natural_swiping_;
             move_page(natural_swiping_ ? -1 : 1);
         }
         break;
@@ -3576,11 +3589,13 @@ bool Viewer::handle_event(const InputEvent& event) {
         } else if (overlay_open_) {
             // Settings/help owns the event; do not page the document below it.
         } else {
+            chrome_visible_ = true;
             move_page(-1);
         }
         break;
     case InputEventType::SwipeDown:
         if (!overlay_open_ && reading_mode_ == ReadingMode::HorizontalScroll) {
+            chrome_visible_ = !natural_swiping_;
             move_page(natural_swiping_ ? 1 : -1);
         }
         break;
@@ -3595,6 +3610,7 @@ bool Viewer::handle_event(const InputEvent& event) {
         } else if (overlay_open_) {
             // Settings/help owns the event; do not page the document below it.
         } else {
+            chrome_visible_ = false;
             move_page(1);
         }
         break;
@@ -3609,6 +3625,7 @@ bool Viewer::handle_event(const InputEvent& event) {
             // Direct-manipulation panning over wide content: moving the
             // finger left reveals content farther to the right.
         } else {
+            chrome_visible_ = natural_swiping_;
             move_page(natural_swiping_ ? -1 : 1);
         }
         break;
@@ -3620,6 +3637,7 @@ bool Viewer::handle_event(const InputEvent& event) {
         } else if (consume_wide_pan(-std::max(12, content_width() - 24))) {
             // Reserved for panning while wide content is in view.
         } else {
+            chrome_visible_ = !natural_swiping_;
             move_page(natural_swiping_ ? 1 : -1);
         }
         break;
@@ -3633,6 +3651,7 @@ bool Viewer::handle_event(const InputEvent& event) {
         } else if (consume_wide_pan(-12)) {
             // Reserved for panning while wide content is in view.
         } else {
+            chrome_visible_ = true;
             move_page(-1);
         }
         break;
@@ -3646,6 +3665,7 @@ bool Viewer::handle_event(const InputEvent& event) {
         } else if (consume_wide_pan(12)) {
             // Reserved for panning while wide content is in view.
         } else {
+            chrome_visible_ = false;
             move_page(1);
         }
         break;
@@ -3653,18 +3673,18 @@ bool Viewer::handle_event(const InputEvent& event) {
         if (overlay_open_) {
             // Pointer gestures never reach the covered document.
         } else if (reading_mode_ == ReadingMode::VerticalScroll) {
+            const int pixels = natural_scrolling_
+                                   ? -routed_event.amount
+                                   : routed_event.amount;
+            if (pixels != 0) chrome_visible_ = pixels < 0;
             if (plain_text_layout_.loaded()) {
                 std::string error;
-                const int pixels = natural_scrolling_
-                                       ? -routed_event.amount
-                                       : routed_event.amount;
                 if (!plain_text_layout_.scroll_pixels(pixels, error) &&
                     !error.empty()) {
                     show_message("TXT read error", error);
                 }
             } else {
-                scroll_y_ += natural_scrolling_ ? -routed_event.amount
-                                                : routed_event.amount;
+                scroll_y_ += pixels;
             }
         }
         break;
@@ -3677,19 +3697,41 @@ bool Viewer::handle_event(const InputEvent& event) {
         } else if (reading_mode_ == ReadingMode::HorizontalScroll) {
             // Natural makes a leftward drag advance; Reversed makes a
             // rightward drag advance.
+            const int pixels = natural_scrolling_
+                                   ? -routed_event.amount
+                                   : routed_event.amount;
+            if (pixels != 0) chrome_visible_ = pixels < 0;
             if (plain_text_layout_.loaded()) {
                 std::string error;
-                const int pixels = natural_scrolling_
-                                       ? -routed_event.amount
-                                       : routed_event.amount;
                 if (!plain_text_layout_.scroll_pixels(pixels, error) &&
                     !error.empty()) {
                     show_message("TXT read error", error);
                 }
             } else {
-                scroll_y_ += natural_scrolling_ ? -routed_event.amount
-                                                : routed_event.amount;
+                scroll_y_ += pixels;
             }
+        }
+        break;
+    case InputEventType::OpenBookmarks:
+        if (overlay_open_ && toc_overlay_ && bookmark_tab_) {
+            // The Catalog key toggles its own list closed again.
+            overlay_open_ = false;
+            toc_overlay_ = false;
+        } else if (overlay_open_) {
+            // Other modal layers keep the event.
+        } else if (document_loaded_) {
+            commit_settings_session();
+            overlay_open_ = true;
+            toc_overlay_ = true;
+            jump_overlay_ = false;
+            search_overlay_ = false;
+            settings_overlay_ = false;
+            diagnostics_overlay_ = false;
+            document_browser_overlay_ = false;
+            font_browser_overlay_ = false;
+            link_overlay_ = false;
+            bookmark_tab_ = true;
+            rebuild_bookmark_runs();
         }
         break;
     case InputEventType::OpenMenu:
@@ -3810,6 +3852,7 @@ bool Viewer::handle_event(const InputEvent& event) {
                 scroll_y_ = fx_floor(markdown_layout_.position_for_source(
                     kInvalidNode, bookmarks_[bookmark_selected_], 0));
             }
+            chrome_visible_ = true;
             overlay_open_ = false;
             toc_overlay_ = false;
         } else if (overlay_open_ && toc_overlay_ && markdown_document_ != nullptr &&
@@ -3818,6 +3861,7 @@ bool Viewer::handle_event(const InputEvent& event) {
             const HeadingEntry& heading = markdown_document_->ir.headings[toc_selected_];
             scroll_y_ = fx_floor(markdown_layout_.position_for_source(
                 heading.block, heading.source_offset, 0));
+            chrome_visible_ = true;
             overlay_open_ = false;
             toc_overlay_ = false;
             jump_overlay_ = false;
@@ -4040,6 +4084,7 @@ bool Viewer::handle_event(const InputEvent& event) {
                          old_natural_swiping != natural_swiping_ ||
                          old_resident_font_preload !=
                              resident_font_preload_ ||
+                         old_chrome_visible != chrome_visible_ ||
                          old_render_sharpness != render_sharpness_ ||
                          bookmark_changed ||
                          !pending_document_link_.empty() ||
@@ -4615,8 +4660,10 @@ void Viewer::render_markdown_document(const Surface565& surface, Rect viewport) 
 void Viewer::render_overlay(const Surface565& surface, bool apply_scrim) {
     const ThemeColors colors = theme_colors(dark_theme_, high_contrast_);
     const std::uint16_t scrim = rgb565(0, 0, 0);
-    const Rect scrim_area{0, kHeaderHeight, kScreenWidth,
-                          kScreenHeight - kHeaderHeight};
+    const Rect scrim_area = chrome_visible_
+                                ? Rect{0, kHeaderHeight, kScreenWidth,
+                                       kScreenHeight - kHeaderHeight}
+                                : Rect{0, 0, kScreenWidth, kScreenHeight};
     if (apply_scrim) {
         for (int y = scrim_area.y; y < scrim_area.y + scrim_area.height; ++y) {
             std::uint16_t* row = surface.row(y);
@@ -5148,45 +5195,57 @@ void Viewer::render(const Surface565& surface) {
     }
 
     const ThemeColors colors = theme_colors(dark_theme_, high_contrast_);
-    // Full-frame coverage without a whole-surface clear: the header fill
-    // covers rows [0, kHeaderHeight), every render_document branch fills the
-    // complete viewport rows below it, and the two-row strip at the bottom
-    // stays outside the document clip so glyphs can never touch the physical
+    // Full-frame coverage without a whole-surface clear: the document
+    // viewport starts below the filename bar while it is visible and owns
+    // the full height once reading forward hides it, the bar fills the top
+    // rows in the former case, and the two-row strip at the bottom stays
+    // outside the document clip so glyphs can never touch the physical
     // bottom edge of the screen. Together these paint every pixel, so the
     // presented frame and the retained base snapshot never see stale data.
-    fill_rect(surface, {0, 0, kScreenWidth, kHeaderHeight}, colors.header);
-    fill_rect(surface,
-              {0, kHeaderHeight + kViewportHeight,
-               kScreenWidth, kBottomContentInset},
-              colors.paper);
-    const Rect viewport{0, kHeaderHeight, kScreenWidth, kViewportHeight};
+    // Scroll geometry always uses the full-height kViewportHeight; a
+    // visible bar only clips the bottom of the drawn window, so layout
+    // never reflows with bar visibility.
+    const int content_top = chrome_visible_ ? kHeaderHeight : 0;
+    const Rect viewport{0, content_top, kScreenWidth,
+                        kViewportHeight - content_top};
     render_document(surface, viewport);
+    fill_rect(surface,
+              {0, kViewportHeight, kScreenWidth, kBottomContentInset},
+              colors.paper);
 
+#if defined(NMARKDOWN_FIREBIRD_PROGRESS_FIXTURE)
+    {
+        const int page = current_page();
+        const int page_count = total_pages();
+        std::printf(
+            "NMARKDOWN_IT/1 READING_PROGRESS mode=%s scroll=%d max=%d "
+            "page=%d total=%d width=%d\n",
+            reading_mode_ == ReadingMode::HorizontalScroll ? "horizontal"
+                                                           : "vertical",
+            scroll_y_, max_scroll_y(), page, page_count,
+            reading_progress_width());
+        std::fflush(stdout);
+    }
+#endif
+    // The title bar hides while reading forward, but the two-pixel reading
+    // progress strip stays as a permanent, unobtrusive overlay.
+    if (chrome_visible_) {
+        fill_rect(surface, {0, 0, kScreenWidth, kHeaderHeight},
+                  colors.header);
+    }
     // Markdown layout is populated lazily while painting the visible units,
-    // so calculate continuous document progress after that pass.
+    // so continuous document progress is calculated after that pass.
     const std::uint16_t progress_color =
-        document_error_ ? colors.failure
-                        : (document_loaded_ ? colors.success : colors.accent);
+        document_error_
+            ? colors.failure
+            : (document_loaded_ ? colors.success : colors.accent);
     fill_rect(surface,
               {0, 0, kScreenWidth, kProgressHeight},
               colors.border);
-    const int progress_width = reading_progress_width();
-#if defined(NMARKDOWN_FIREBIRD_PROGRESS_FIXTURE)
-    const int page = current_page();
-    const int page_count = total_pages();
-    std::printf("NMARKDOWN_IT/1 READING_PROGRESS mode=%s scroll=%d max=%d "
-                "page=%d total=%d width=%d\n",
-                reading_mode_ == ReadingMode::HorizontalScroll
-                    ? "horizontal"
-                    : "vertical",
-                scroll_y_, max_scroll_y(), page, page_count, progress_width);
-    std::fflush(stdout);
-#endif
     fill_rect(surface,
-              {0, 0, progress_width, kProgressHeight},
+              {0, 0, reading_progress_width(), kProgressHeight},
               progress_color);
-
-    if (text_ready_) {
+    if (chrome_visible_ && text_ready_) {
         const int title_clip_right = kScreenWidth - kChromeRightPadding;
         rebuild_chrome_title(std::max(0, title_clip_right - kChromeX));
         text_.draw_run(surface,

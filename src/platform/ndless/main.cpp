@@ -514,6 +514,13 @@ int main(int argc, char** argv) {
     // NAND latency.
     options.maximum_external_font_bytes = 20U * 1024U * 1024U;
     options.maximum_resident_font_bytes = 12U * 1024U * 1024U;
+    // Promote only for documents large enough to repay the one-time
+    // sequential font read. Around a quarter megabyte of CJK prose the
+    // cumulative per-glyph NAND reads of streaming overtake reading a whole
+    // subsetted CJK face once; smaller files open faster with streaming.
+    // Fonts still upgrade automatically when a large document is opened
+    // later in the session.
+    options.minimum_resident_font_document_bytes = 256U * 1024U;
 #if defined(NMARKDOWN_FIREBIRD_INTEGRATION) && \
     !defined(NMARKDOWN_FIREBIRD_STATE_FIXTURE)
     options.persist_state = false;

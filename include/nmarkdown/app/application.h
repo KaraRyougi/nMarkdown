@@ -24,6 +24,12 @@ struct ReaderOptions {
     // reserve remains afterwards; otherwise the face keeps streaming. Zero
     // disables promotion.
     std::size_t maximum_resident_font_bytes = 0;
+    // Promotion is attempted only when the document being opened (or already
+    // open) is at least this large: a small file finishes its handful of cold
+    // glyph loads faster than one multi-megabyte upfront font read, while a
+    // long document repays that read many times over. Zero promotes whenever
+    // the budget allows, regardless of document size.
+    std::uint64_t minimum_resident_font_document_bytes = 0;
     bool persist_state = true;
     bool open_browser_on_empty_path = false;
     ReadingMode initial_reading_mode = ReadingMode::VerticalScroll;

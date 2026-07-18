@@ -6,6 +6,7 @@
 #include <cctype>
 #include <cstdio>
 #include <cstring>
+#include <functional>
 #include <limits>
 #include <new>
 #include <string>
@@ -154,6 +155,14 @@ public:
         detail_ = std::move(detail);
         progress_percent_ = -1;
         checkpoint(expected_slow);
+    }
+
+    // A nested DelayedLoadingFeedback (for example a font promotion inside a
+    // document open) unregisters the shared filesystem progress callback when
+    // it is destroyed. The outer scope calls this to take the callback back
+    // so later long reads keep animating its card.
+    void reattach() {
+        files_.set_operation_progress_callback(&progress_callback, this);
     }
 
     void checkpoint(bool expected_slow = false) {
@@ -663,6 +672,19 @@ int run_reader(Display& display,
             integration_log("STATE_SAVE_OK");
         }
     };
+    // Size of the document that is open or about to open; the resident-font
+    // policy uses it to decide whether one upfront sequential font read is
+    // cheaper than the per-glyph streaming reads the session would otherwise
+    // pay. Zero means unknown, which never justifies the upfront read.
+    std::uint64_t current_document_bytes = 0;
+    // One failed promotion (heap probe or allocation) is remembered so a
+    // large-document open does not re-read a multi-megabyte payload just to
+    // fail the same way; an explicit font apply from the menu retries.
+    bool resident_font_promotion_failed = false;
+    // Assigned after load_document below; declared first so opening a large
+    // document can upgrade still-streamed fonts through the same code path.
+    std::function<bool(const RememberedFontPaths&, bool, std::string&)>
+        apply_font_assignments_safely;
     const auto load_document = [&](const std::string& path, std::string& error) {
         DelayedLoadingFeedback loading(viewer, display, files, clock,
                                        "Opening document",
@@ -685,6 +707,32 @@ int run_reader(Display& display,
             if (!files.probe(actual_path.c_str(), document, error)) return false;
         }
         integration_log("DOCUMENT_PROBED");
+        // A document this large amortizes promoting a still-streamed font
+        // into RAM. Upgrading before this document is parsed and laid out
+        // makes the registry swap's glyph-cache clear and reflow free.
+        if (!resident_font_promotion_failed &&
+            options.maximum_resident_font_bytes != 0 &&
+            document.size >= options.minimum_resident_font_document_bytes) {
+            const FontRegistryState registry = viewer.font_registry_state();
+            bool promotable_stream = false;
+            for (const LoadedExternalFont& font : registry.fonts) {
+                if (font.source != nullptr && font.byte_size() != 0 &&
+                    font.byte_size() <=
+                        options.maximum_resident_font_bytes) {
+                    promotable_stream = true;
+                    break;
+                }
+            }
+            if (promotable_stream) {
+                current_document_bytes = document.size;
+                std::string upgrade_error;
+                if (!apply_font_assignments_safely(current_font_paths, false,
+                                                   upgrade_error)) {
+                    integration_log("FONT_RESIDENT_UPGRADE_FAILED");
+                }
+                loading.reattach();
+            }
+        }
         loading.stage("Reading file",
                       document.size >= kLargeDocumentFeedbackBytes &&
                           document.size <= options.maximum_source_bytes);
@@ -918,6 +966,7 @@ int run_reader(Display& display,
         viewer.set_performance_metrics(metrics);
         identity = new_identity;
         current_path = actual_path;
+        current_document_bytes = document.size;
         state_path = actual_path + ".nmdstate";
         std::string state_warning = std::move(pending_state_warning);
         pending_state_warning.clear();
@@ -992,6 +1041,9 @@ int run_reader(Display& display,
         // measurement interval. This includes the old/new registry overlap,
         // FreeType/HarfBuzz setup, and the first layout invalidation.
         allocation_stats_begin_checkpoint();
+        // Every apply is a fresh promotion opportunity; a failure recorded
+        // below only suppresses automatic large-document retries.
+        resident_font_promotion_failed = false;
         DelayedLoadingFeedback loading(viewer, display, files, clock,
                                        "Loading fonts",
                                        "Preparing assigned font files");
@@ -1097,47 +1149,6 @@ int run_reader(Display& display,
                             return false;
                         }
                         loaded.source = std::move(source);
-                        // Best-effort promotion to a RAM-resident payload:
-                        // one sequential read now removes every per-glyph
-                        // storage seek later. Any failure — over budget,
-                        // allocation, short read, or a heap too tight to
-                        // keep the reader's working-set reserve — silently
-                        // keeps the already-open stream.
-                        const std::size_t payload_bytes =
-                            static_cast<std::size_t>(probe.size);
-                        if (payload_bytes != 0 &&
-                            payload_bytes <=
-                                options.maximum_resident_font_bytes &&
-                            resident_bytes <=
-                                options.maximum_resident_font_bytes -
-                                    payload_bytes) {
-                            loading.stage(
-                                "Loading " +
-                                    font_label_from_path(actual_path) +
-                                    " into memory",
-                                probe.size >= kLargeFontFeedbackBytes);
-                            try {
-                                std::vector<std::uint8_t> payload;
-                                std::string resident_error;
-                                if (files.read_all(
-                                        actual_path.c_str(),
-                                        options.maximum_font_bytes,
-                                        payload, resident_error) &&
-                                    payload.size() == payload_bytes &&
-                                    heap_reserve_available()) {
-                                    loaded.data = std::make_shared<
-                                        const std::vector<std::uint8_t>>(
-                                        std::move(payload));
-                                    loaded.source.reset();
-                                }
-                            } catch (const std::bad_alloc&) {
-                                // Promotion must never turn a working
-                                // streamed font into an apply failure.
-                            }
-                        }
-                        integration_log(loaded.data != nullptr
-                                            ? "FONT_RESOURCE_RESIDENT"
-                                            : "FONT_RESOURCE_STREAMED");
                     } else {
                         if (!stream_error.empty()) {
                             error = font_specific_error(
@@ -1162,6 +1173,59 @@ int run_reader(Display& display,
                         static_cast<std::uint32_t>(probe.size) ^
                         static_cast<std::uint32_t>(probe.size >> 32U);
                     if (loaded.signature == 0) loaded.signature = 1;
+                }
+                // Best-effort promotion of any still-streamed payload —
+                // freshly opened or reused from the previous registry — into
+                // a RAM-resident buffer. One sequential read now removes
+                // every per-glyph storage seek later, so it is attempted
+                // only when the target document is large enough to amortize
+                // it. Any failure — over budget, allocation, short read, or
+                // a heap too tight to keep the reader's working-set reserve
+                // — silently keeps the already-open stream.
+                if (loaded.source != nullptr && loaded.data == nullptr) {
+                    const std::size_t payload_bytes =
+                        static_cast<std::size_t>(probe.size);
+                    const bool fits_budget =
+                        payload_bytes != 0 &&
+                        payload_bytes <=
+                            options.maximum_resident_font_bytes &&
+                        resident_bytes <=
+                            options.maximum_resident_font_bytes -
+                                payload_bytes;
+                    const bool document_amortizes_read =
+                        current_document_bytes >=
+                        options.minimum_resident_font_document_bytes;
+                    if (fits_budget && document_amortizes_read) {
+                        loading.stage(
+                            "Loading " +
+                                font_label_from_path(actual_path) +
+                                " into memory",
+                            probe.size >= kLargeFontFeedbackBytes);
+                        try {
+                            std::vector<std::uint8_t> payload;
+                            std::string resident_error;
+                            if (files.read_all(
+                                    actual_path.c_str(),
+                                    options.maximum_font_bytes,
+                                    payload, resident_error) &&
+                                payload.size() == payload_bytes &&
+                                heap_reserve_available()) {
+                                loaded.data = std::make_shared<
+                                    const std::vector<std::uint8_t>>(
+                                    std::move(payload));
+                                loaded.source.reset();
+                            }
+                        } catch (const std::bad_alloc&) {
+                            // Promotion must never turn a working streamed
+                            // font into an apply failure.
+                        }
+                        if (loaded.data == nullptr) {
+                            resident_font_promotion_failed = true;
+                        }
+                    }
+                    integration_log(loaded.data != nullptr
+                                        ? "FONT_RESOURCE_RESIDENT"
+                                        : "FONT_RESOURCE_STREAMED");
                 }
                 if (loaded.data != nullptr) {
                     resident_bytes += loaded.data->size();
@@ -1212,7 +1276,7 @@ int run_reader(Display& display,
 #endif
         return true;
     };
-    const auto apply_font_assignments_safely =
+    apply_font_assignments_safely =
         [&](const RememberedFontPaths& requested,
             bool interactive,
             std::string& error) {
@@ -1380,6 +1444,24 @@ int run_reader(Display& display,
     const bool has_startup_fonts = std::any_of(
         startup_font_paths.begin(), startup_font_paths.end(),
         [](const std::string& path) { return !path.empty(); });
+    // The size of the startup document decides whether resident-font
+    // promotion is worth its one-time sequential read during the font apply
+    // below. A missing or unspecified document leaves the size at zero, so
+    // fonts stream until a large document is actually opened.
+    if (document_path != nullptr && document_path[0] != '\0') {
+        DocumentProbe startup_probe;
+        std::string startup_probe_error;
+        std::string startup_document_path = document_path;
+        if (!files.probe(startup_document_path.c_str(), startup_probe,
+                         startup_probe_error)) {
+            startup_document_path += ".tns";
+            if (!files.probe(startup_document_path.c_str(), startup_probe,
+                             startup_probe_error)) {
+                startup_probe.size = 0;
+            }
+        }
+        current_document_bytes = startup_probe.size;
+    }
     // Resolve remembered roles before opening the document. Large UTF-8 TXT
     // uses a bounded sequential cache rather than a giant source allocation;
     // applying CJK first also avoids showing a stale "CJK font needed" dialog

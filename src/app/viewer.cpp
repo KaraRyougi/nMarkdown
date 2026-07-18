@@ -1673,7 +1673,21 @@ void Viewer::show_message(std::string title, std::string message) {
     diagnostics_overlay_ = false;
     document_browser_overlay_ = false;
     font_browser_overlay_ = false;
+    // Ordinary messages close on any key; only show_cjk_font_prompt() arms
+    // the Enter-opens-fonts action after this reset.
+    message_confirm_opens_font_menu_ = false;
     dirty_ = true;
+}
+
+void Viewer::show_cjk_font_prompt() {
+    show_message("CJK font needed",
+                 "This document contains CJK text without a font");
+    if (text_ready_) {
+        constexpr char hint[] = "Enter opens Fonts, Esc continues";
+        text_.shape(hint, sizeof(hint) - 1,
+                    fx_from_int(kMenuAuxiliaryPixelSize), link_hint_run_);
+    }
+    message_confirm_opens_font_menu_ = true;
 }
 
 void Viewer::show_loading_feedback(std::string title,
@@ -2088,8 +2102,7 @@ bool Viewer::set_markdown_document(std::unique_ptr<MarkdownDocument> document,
             return false;
         }()) {
         cjk_font_hint_shown_ = true;
-        show_message("CJK font needed",
-                     "Fonts: open a font and check CJK");
+        show_cjk_font_prompt();
     }
     dirty_ = true;
     return true;
@@ -2159,8 +2172,7 @@ bool Viewer::set_plain_text_document(
         text_.external_font_id(FontRole::Cjk) == 0 &&
         plain_text_layout_.initial_cache_contains_cjk()) {
         cjk_font_hint_shown_ = true;
-        show_message("CJK font needed",
-                     "Fonts: open a font and check CJK");
+        show_cjk_font_prompt();
     }
     dirty_ = true;
     return true;
@@ -3186,6 +3198,12 @@ bool Viewer::handle_event(const InputEvent& event) {
                    routed_event.type == InputEventType::OpenMenu) {
             overlay_open_ = false;
             link_overlay_ = false;
+            if (message_confirm_opens_font_menu_) {
+                if (routed_event.type == InputEventType::Activate) {
+                    pending_font_menu_request_ = true;
+                }
+                message_confirm_opens_font_menu_ = false;
+            }
         }
         const bool changed = old_overlay != overlay_open_ ||
                              old_link_overlay != link_overlay_ ||

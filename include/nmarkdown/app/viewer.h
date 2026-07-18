@@ -84,6 +84,9 @@ public:
     }
     bool navigate_to_anchor(std::string_view fragment);
     void show_message(std::string title, std::string message);
+    // Message variant asking the user to assign a CJK font: confirming with
+    // Enter opens the font manager, Esc continues without one.
+    void show_cjk_font_prompt();
     void show_loading_feedback(std::string title,
                                std::string detail,
                                int progress_percent = -1);
@@ -353,6 +356,7 @@ private:
         "ASCII UI", "Outline slant", "Built-in DejaVu Mono", "None",
         "Synthetic bold", "Synthetic bold italic", "Outline slant"}};
     bool pending_font_menu_request_ = false;
+    bool message_confirm_opens_font_menu_ = false;
     bool pending_font_assignments_available_ = false;
     bool cjk_font_hint_shown_ = false;
     std::uint32_t font_pack_signature_ = 1;

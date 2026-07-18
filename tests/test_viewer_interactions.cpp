@@ -919,6 +919,41 @@ void test_render_sharpness_setting_is_key_only_and_persisted() {
 // from the first row lands on the last and stepping down from the last
 // returns to the first. Each wrap is proven by activating the row it lands
 // on rather than by peeking at selection state.
+// Opening a CJK document with no CJK-role font asks the user to pick one:
+// Enter on the prompt requests the font manager, Esc continues without and
+// the passive once-per-session behavior is retained.
+void test_missing_cjk_font_prompt_offers_font_manager() {
+    current_case = "missing CJK font prompt";
+    {
+        nmarkdown::Viewer viewer;
+        CHECK(load_markdown(viewer, u8"中文内容需要字体支持。\n"));
+        CHECK(!viewer.take_font_menu_request());
+        CHECK(send(viewer, nmarkdown::InputEventType::Activate));
+        CHECK(viewer.take_font_menu_request());
+        CHECK(!viewer.take_font_menu_request());
+    }
+    {
+        nmarkdown::Viewer viewer;
+        CHECK(load_markdown(viewer, u8"中文内容需要字体支持。\n"));
+        CHECK(send(viewer, nmarkdown::InputEventType::Back));
+        CHECK(!viewer.take_font_menu_request());
+        CHECK(!viewer.quit_requested());
+        // A later ordinary message keeps plain Enter-closes semantics.
+        viewer.show_message("Note", "Ordinary message");
+        CHECK(send(viewer, nmarkdown::InputEventType::Activate));
+        CHECK(!viewer.take_font_menu_request());
+    }
+    {
+        // Documents without CJK content never prompt: an immediate Activate
+        // finds no armed dialog and requests nothing.
+        nmarkdown::Viewer viewer;
+        CHECK(load_markdown(viewer, "Latin only body.\n"));
+        send(viewer, nmarkdown::InputEventType::Activate);
+        CHECK(!viewer.take_font_menu_request());
+        CHECK(!viewer.quit_requested());
+    }
+}
+
 void test_system_lists_wrap_at_both_ends() {
     current_case = "system lists wrap at both ends";
 
@@ -1732,6 +1767,7 @@ int main() {
     test_deferred_plain_text_page_marks_viewer_dirty();
     test_plain_text_rewarms_after_glyph_cache_clear();
     test_render_sharpness_setting_is_key_only_and_persisted();
+    test_missing_cjk_font_prompt_offers_font_manager();
     test_system_lists_wrap_at_both_ends();
     test_font_preload_setting_toggles_and_requests_save();
     test_wide_content_pan_keeps_conventional_directions();

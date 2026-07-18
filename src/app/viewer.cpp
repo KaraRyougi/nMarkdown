@@ -68,6 +68,34 @@ std::size_t wrap_next_row(std::size_t selected,
     return selected + 1U < row_count ? selected + 1U : minimum_row;
 }
 
+// Small chevrons at the panel's right edge showing that a scrollable list
+// continues above or below the visible rows: light on the dark header
+// strip, accent on the panel body near its bottom edge.
+void draw_list_overflow_hints(const Surface565& surface,
+                              const Rect& panel,
+                              std::uint16_t above_color,
+                              std::uint16_t below_color,
+                              bool more_above,
+                              bool more_below) {
+    const int center_x = panel.x + panel.width - 12;
+    if (more_above) {
+        for (int row = 0; row < 4; ++row) {
+            fill_rect(surface,
+                      {center_x - row, panel.y + 7 + row, row * 2 + 1, 1},
+                      above_color, panel);
+        }
+    }
+    if (more_below) {
+        for (int row = 0; row < 4; ++row) {
+            fill_rect(surface,
+                      {center_x - (3 - row),
+                       panel.y + panel.height - 12 + row,
+                       (3 - row) * 2 + 1, 1},
+                      below_color, panel);
+        }
+    }
+}
+
 // Greedy word wrap for short UI strings: at most maximum_lines shaped runs
 // fitting maximum_width_px, breaking at spaces when possible and at UTF-8
 // codepoints otherwise (so unspaced scripts still wrap), with the final line
@@ -4811,6 +4839,10 @@ void Viewer::render_overlay(const Surface565& surface, bool apply_scrim) {
                            selected ? rgb565(250, 252, 255) : colors.ink,
                            background, dark_theme_, true, panel);
         }
+        draw_list_overflow_hints(surface, panel,
+                                 rgb565(250, 252, 255),
+                                 colors.accent, first > 0,
+                                 last < row_count);
         return;
     }
     if (document_browser_overlay_) {
@@ -4850,6 +4882,10 @@ void Viewer::render_overlay(const Surface565& surface, bool apply_scrim) {
                            selected ? rgb565(250, 252, 255) : colors.ink,
                            background, dark_theme_, true, panel);
         }
+        draw_list_overflow_hints(surface, panel,
+                                 rgb565(250, 252, 255),
+                                 colors.accent, first > 0,
+                                 last < document_browser_runs_.size());
         return;
     }
     if (diagnostics_overlay_) {
@@ -4907,6 +4943,10 @@ void Viewer::render_overlay(const Surface565& surface, bool apply_scrim) {
                                selected ? rgb565(250, 252, 255) : colors.ink,
                                background, dark_theme_, true, panel);
             }
+            draw_list_overflow_hints(surface, panel,
+                                     rgb565(250, 252, 255),
+                                     colors.accent, first > 0,
+                                     last < link_choice_runs_.size());
             return;
         }
         fill_rect(surface, {panel.x + 8, panel.y + 34, panel.width - 16, 48},
@@ -4978,6 +5018,10 @@ void Viewer::render_overlay(const Surface565& surface, bool apply_scrim) {
                            selected ? rgb565(250, 252, 255) : colors.ink,
                            row_background, dark_theme_, true, panel);
         }
+        draw_list_overflow_hints(surface, panel,
+                                 rgb565(250, 252, 255),
+                                 colors.accent, first > 0,
+                                 last < search_result_runs_.size());
         return;
     }
     if (jump_overlay_) {
@@ -5032,6 +5076,10 @@ void Viewer::render_overlay(const Surface565& surface, bool apply_scrim) {
                            selected ? rgb565(250, 252, 255) : colors.ink,
                            background, dark_theme_, true, panel);
         }
+        draw_list_overflow_hints(surface, panel,
+                                 rgb565(250, 252, 255),
+                                 colors.accent, first > 0,
+                                 last < settings_runs_.size());
         return;
     }
     // Bookmarks are independent of the Markdown section system, so the list
@@ -5101,6 +5149,10 @@ void Viewer::render_overlay(const Surface565& surface, bool apply_scrim) {
                            true,
                            panel);
         }
+        draw_list_overflow_hints(surface, panel,
+                                 rgb565(250, 252, 255),
+                                 colors.accent, first > 0,
+                                 last < rows.size());
         if (rows.empty()) {
             const GlyphRun& empty_message = show_bookmarks
                                                 ? bookmark_empty_run_

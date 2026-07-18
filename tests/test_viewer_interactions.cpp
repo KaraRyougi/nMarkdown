@@ -930,6 +930,34 @@ void test_render_sharpness_setting_is_key_only_and_persisted() {
 // the passive once-per-session behavior is retained.
 // The filename bar hides while reading forward and returns on any upward
 // step; the two-pixel reading-progress strip stays visible in both states.
+// Scrollable panels hint at off-screen rows: a chevron on the header edge
+// when content continues above, one near the bottom edge when it continues
+// below. The settings list (thirteen rows, nine visible) exercises both.
+void test_settings_list_shows_overflow_hints() {
+    current_case = "settings overflow hints";
+    nmarkdown::Viewer viewer;
+    CHECK(load_markdown(viewer, "Body.\n"));
+    CHECK(open_settings(viewer));
+    constexpr int kWidth = 320;
+    constexpr int kHeight = 240;
+    std::vector<std::uint16_t> pixels(kWidth * kHeight, 0);
+    nmarkdown::Surface565 surface(pixels.data(), kWidth, kHeight, kWidth);
+    viewer.render(surface);
+    const auto at = [&](int x, int y) {
+        return pixels[static_cast<std::size_t>(y) * kWidth + x];
+    };
+    // At the top of the list only the below-hint shows.
+    CHECK(at(294, 25) == at(280, 25));
+    CHECK(at(294, 210) != at(280, 210));
+
+    for (int row = 0; row < 12; ++row) {
+        CHECK(send(viewer, nmarkdown::InputEventType::ScrollLineDown));
+    }
+    viewer.render(surface);
+    CHECK(at(294, 25) != at(280, 25));
+    CHECK(at(294, 210) == at(280, 210));
+}
+
 void test_filename_bar_hides_forward_and_returns_upward() {
     current_case = "auto-hiding filename bar";
     nmarkdown::Viewer viewer;
@@ -1924,6 +1952,7 @@ int main() {
     test_deferred_plain_text_page_marks_viewer_dirty();
     test_plain_text_rewarms_after_glyph_cache_clear();
     test_render_sharpness_setting_is_key_only_and_persisted();
+    test_settings_list_shows_overflow_hints();
     test_filename_bar_hides_forward_and_returns_upward();
     test_catalog_bookmark_menu_jumps_and_toggles();
     test_missing_cjk_font_prompt_offers_font_manager();

@@ -87,6 +87,7 @@ public:
     // Message variant asking the user to assign a CJK font: confirming with
     // Enter opens the font manager, Esc continues without one.
     void show_cjk_font_prompt();
+    void reshape_message_dialog_runs();
     void show_loading_feedback(std::string title,
                                std::string detail,
                                int progress_percent = -1);

@@ -927,6 +927,19 @@ void test_missing_cjk_font_prompt_offers_font_manager() {
     {
         nmarkdown::Viewer viewer;
         CHECK(load_markdown(viewer, u8"中文内容需要字体支持。\n"));
+        // The open prompt must survive a saved-state restore, which rebuilds
+        // every shaped run while the dialog is up (the reopen-with-state
+        // path); the frame must not lose the dialog text.
+        constexpr int kWidth = 320;
+        constexpr int kHeight = 240;
+        std::vector<std::uint16_t> pixels(kWidth * kHeight, 0);
+        nmarkdown::Surface565 surface(pixels.data(), kWidth, kHeight,
+                                      kWidth);
+        viewer.render(surface);
+        const std::vector<std::uint16_t> before = pixels;
+        CHECK(viewer.apply_reader_state(viewer.reader_state(0), 0));
+        viewer.render(surface);
+        CHECK(pixels == before);
         CHECK(!viewer.take_font_menu_request());
         CHECK(send(viewer, nmarkdown::InputEventType::Activate));
         CHECK(viewer.take_font_menu_request());

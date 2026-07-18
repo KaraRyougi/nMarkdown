@@ -829,6 +829,13 @@ void Viewer::rebuild_text_runs() {
         overlay_runs_.push_back(std::move(run));
     }
     rebuild_jump_runs();
+    // A message dialog can be open while the runs are rebuilt — for example
+    // the CJK font prompt shown during a document load, followed by the
+    // saved-state restore. Re-shape its retained strings so the open dialog
+    // does not turn blank on the next frame.
+    if (link_overlay_ && !link_choice_mode_) {
+        reshape_message_dialog_runs();
+    }
 }
 
 void Viewer::rebuild_toc_runs() {
@@ -1644,6 +1651,26 @@ bool Viewer::navigate_to_anchor(std::string_view fragment) {
     return false;
 }
 
+void Viewer::reshape_message_dialog_runs() {
+    link_title_ = {};
+    link_target_run_ = {};
+    link_hint_run_ = {};
+    if (!text_ready_) return;
+    text_.shape(link_dialog_title_.data(), link_dialog_title_.size(),
+                fx_from_int(kMenuTitlePixelSize), link_title_);
+    text_.shape(link_dialog_target_.data(), link_dialog_target_.size(),
+                fx_from_int(kMenuCompactPixelSize), link_target_run_);
+    constexpr char kPromptHint[] = "Enter opens Fonts, Esc continues";
+    constexpr char kCloseHint[] = "Enter or Esc closes";
+    if (message_confirm_opens_font_menu_) {
+        text_.shape(kPromptHint, sizeof(kPromptHint) - 1,
+                    fx_from_int(kMenuAuxiliaryPixelSize), link_hint_run_);
+    } else {
+        text_.shape(kCloseHint, sizeof(kCloseHint) - 1,
+                    fx_from_int(kMenuAuxiliaryPixelSize), link_hint_run_);
+    }
+}
+
 void Viewer::show_message(std::string title, std::string message) {
     commit_settings_session();
     link_choice_mode_ = false;
@@ -1652,18 +1679,10 @@ void Viewer::show_message(std::string title, std::string message) {
     link_choice_selected_ = 0;
     link_dialog_title_ = std::move(title);
     link_dialog_target_ = std::move(message);
-    link_title_ = {};
-    link_target_run_ = {};
-    link_hint_run_ = {};
-    if (text_ready_) {
-        text_.shape(link_dialog_title_.data(), link_dialog_title_.size(),
-                    fx_from_int(kMenuTitlePixelSize), link_title_);
-        text_.shape(link_dialog_target_.data(), link_dialog_target_.size(),
-                    fx_from_int(kMenuCompactPixelSize), link_target_run_);
-        constexpr char hint[] = "Enter or Esc closes";
-        text_.shape(hint, sizeof(hint) - 1,
-                    fx_from_int(kMenuAuxiliaryPixelSize), link_hint_run_);
-    }
+    // Ordinary messages close on any key; only show_cjk_font_prompt() arms
+    // the Enter-opens-fonts action, and the hint text follows that flag.
+    message_confirm_opens_font_menu_ = false;
+    reshape_message_dialog_runs();
     overlay_open_ = true;
     link_overlay_ = true;
     toc_overlay_ = false;
@@ -1673,21 +1692,14 @@ void Viewer::show_message(std::string title, std::string message) {
     diagnostics_overlay_ = false;
     document_browser_overlay_ = false;
     font_browser_overlay_ = false;
-    // Ordinary messages close on any key; only show_cjk_font_prompt() arms
-    // the Enter-opens-fonts action after this reset.
-    message_confirm_opens_font_menu_ = false;
     dirty_ = true;
 }
 
 void Viewer::show_cjk_font_prompt() {
     show_message("CJK font needed",
                  "This document contains CJK text without a font");
-    if (text_ready_) {
-        constexpr char hint[] = "Enter opens Fonts, Esc continues";
-        text_.shape(hint, sizeof(hint) - 1,
-                    fx_from_int(kMenuAuxiliaryPixelSize), link_hint_run_);
-    }
     message_confirm_opens_font_menu_ = true;
+    reshape_message_dialog_runs();
 }
 
 void Viewer::show_loading_feedback(std::string title,

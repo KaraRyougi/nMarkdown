@@ -912,6 +912,39 @@ void test_render_sharpness_setting_is_key_only_and_persisted() {
           nmarkdown::kDefaultRenderSharpness + 1);
 }
 
+// The "Font preload" settings row turns resident-font promotion off
+// entirely. Committing a change requests one global preference save; an
+// untouched session requests none.
+void test_font_preload_setting_toggles_and_requests_save() {
+    current_case = "font preload setting";
+    nmarkdown::Viewer viewer;
+    CHECK(load_markdown(viewer, "Plain paragraph body.\n"));
+    CHECK(viewer.resident_font_preload());
+    CHECK(!viewer.take_font_preload_save_request());
+
+    CHECK(open_settings(viewer));
+    for (int row = 0; row < 11; ++row) {
+        CHECK(send(viewer, nmarkdown::InputEventType::ScrollLineDown));
+    }
+    CHECK(send(viewer, nmarkdown::InputEventType::PanRight));
+    CHECK(!viewer.resident_font_preload());
+    CHECK(send(viewer, nmarkdown::InputEventType::Activate));
+    CHECK(viewer.take_font_preload_save_request());
+    CHECK(!viewer.take_font_preload_save_request());
+
+    // The selected row is retained, so reopening edits the same switch.
+    CHECK(open_settings(viewer));
+    CHECK(send(viewer, nmarkdown::InputEventType::PanLeft));
+    CHECK(viewer.resident_font_preload());
+    CHECK(send(viewer, nmarkdown::InputEventType::Activate));
+    CHECK(viewer.take_font_preload_save_request());
+
+    // A session that leaves the switch untouched requests no save.
+    CHECK(open_settings(viewer));
+    CHECK(send(viewer, nmarkdown::InputEventType::Activate));
+    CHECK(!viewer.take_font_preload_save_request());
+}
+
 void test_wide_content_pan_keeps_conventional_directions() {
     current_case = "conventional wide-content pan";
     nmarkdown::Viewer viewer;
@@ -1638,6 +1671,7 @@ int main() {
     test_deferred_plain_text_page_marks_viewer_dirty();
     test_plain_text_rewarms_after_glyph_cache_clear();
     test_render_sharpness_setting_is_key_only_and_persisted();
+    test_font_preload_setting_toggles_and_requests_save();
     test_wide_content_pan_keeps_conventional_directions();
     test_wide_block_reserves_horizontal_input_for_pan();
     test_plain_document_activation_is_inert();

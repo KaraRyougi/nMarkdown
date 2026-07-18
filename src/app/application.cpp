@@ -514,6 +514,48 @@ std::string font_preference_path(std::string root) {
     return root + ".nmarkdown-fonts";
 }
 
+std::string font_preload_preference_path(std::string root) {
+    if (root.empty()) root = ".";
+    if (root.back() != '/' && root.back() != '\\') root.push_back('/');
+    return root + ".nmarkdown-font-preload";
+}
+
+constexpr std::uint8_t kFontPreloadPreferenceMagic[6] = {
+    'N', 'M', 'F', 'P', 'L', '1'};
+
+void encode_font_preload_preference(bool enabled,
+                                    std::vector<std::uint8_t>& bytes) {
+    bytes.assign(std::begin(kFontPreloadPreferenceMagic),
+                 std::end(kFontPreloadPreferenceMagic));
+    bytes.push_back(enabled ? 1U : 0U);
+    const std::uint32_t checksum =
+        preference_checksum(bytes.data(), bytes.size());
+    for (unsigned shift = 0; shift < 32; shift += 8) {
+        bytes.push_back(static_cast<std::uint8_t>(checksum >> shift));
+    }
+}
+
+bool decode_font_preload_preference(const std::uint8_t* bytes,
+                                    std::size_t size,
+                                    bool& enabled) {
+    constexpr std::size_t kExpected =
+        sizeof(kFontPreloadPreferenceMagic) + 1U + 4U;
+    if (bytes == nullptr || size != kExpected ||
+        !std::equal(std::begin(kFontPreloadPreferenceMagic),
+                    std::end(kFontPreloadPreferenceMagic), bytes)) {
+        return false;
+    }
+    const std::size_t payload = kExpected - 4U;
+    std::uint32_t checksum = 0;
+    for (unsigned shift = 0; shift < 32; shift += 8) {
+        checksum |= static_cast<std::uint32_t>(bytes[payload + shift / 8])
+                    << shift;
+    }
+    if (checksum != preference_checksum(bytes, payload)) return false;
+    enabled = bytes[sizeof(kFontPreloadPreferenceMagic)] != 0;
+    return true;
+}
+
 bool encode_font_preferences(const RememberedFontPaths& paths,
                              std::vector<std::uint8_t>& bytes,
                              std::string& error) {
@@ -684,6 +726,8 @@ int run_reader(Display& display,
         font_preference_path(options.document_root);
     const std::string remembered_cjk_font_path =
         cjk_font_preference_path(options.document_root);
+    const std::string remembered_font_preload_path =
+        font_preload_preference_path(options.document_root);
     std::string pending_state_warning;
     bool state_save_failure_known = false;
     const auto save_current_state = [&]() {
@@ -981,7 +1025,8 @@ int run_reader(Display& display,
         // after the raw input was released leaves the most heap headroom.
         // A payload serving only the CJK role additionally requires actual
         // CJK content.
-        if (!resident_font_promotion_failed &&
+        if (viewer.resident_font_preload() &&
+            !resident_font_promotion_failed &&
             options.maximum_resident_font_bytes != 0 &&
             document.size >= options.minimum_resident_font_document_bytes) {
             const FontRegistryState registry = viewer.font_registry_state();
@@ -1299,7 +1344,8 @@ int run_reader(Display& display,
                         role_index != cjk_role_index ||
                         cjk_path_serves_other_role ||
                         current_document_has_cjk;
-                    if (fits_budget && document_amortizes_read &&
+                    if (viewer.resident_font_preload() && fits_budget &&
+                        document_amortizes_read &&
                         role_needed_by_document) {
                         loading.stage(
                             "Loading " +
@@ -1549,6 +1595,20 @@ int run_reader(Display& display,
     const bool has_startup_fonts = std::any_of(
         startup_font_paths.begin(), startup_font_paths.end(),
         [](const std::string& path) { return !path.empty(); });
+    // Restore the global preload switch before any promotion decision runs.
+    // A missing or invalid preference file keeps the default (enabled).
+    if (options.persist_state) {
+        std::vector<std::uint8_t> preload_bytes;
+        std::string preload_error;
+        bool preload_enabled = true;
+        if (files.read_all(remembered_font_preload_path.c_str(), 64U,
+                           preload_bytes, preload_error) &&
+            decode_font_preload_preference(preload_bytes.data(),
+                                           preload_bytes.size(),
+                                           preload_enabled)) {
+            viewer.set_resident_font_preload(preload_enabled);
+        }
+    }
     // The size of the startup document decides whether resident-font
     // promotion is worth its one-time sequential read during the font apply
     // below. A missing or unspecified document leaves the size at zero, so
@@ -1569,7 +1629,8 @@ int run_reader(Display& display,
         // One bounded content sample decides whether a remembered CJK-role
         // font is worth promoting during the apply below. Read it only when
         // that decision is actually on the table.
-        if (current_document_bytes >=
+        if (viewer.resident_font_preload() &&
+            current_document_bytes >=
                 options.minimum_resident_font_document_bytes &&
             options.maximum_resident_font_bytes != 0 &&
             !startup_font_paths[static_cast<std::size_t>(
@@ -1747,6 +1808,24 @@ int run_reader(Display& display,
             }
             if (viewer.take_state_save_request()) {
                 changed = save_state_with_feedback(false) || changed;
+            }
+            if (viewer.take_font_preload_save_request() &&
+                options.persist_state) {
+                std::vector<std::uint8_t> preload_bytes;
+                encode_font_preload_preference(
+                    viewer.resident_font_preload(), preload_bytes);
+                std::string preload_error;
+                if (!files.write_atomic(
+                        remembered_font_preload_path.c_str(),
+                        preload_bytes.data(), preload_bytes.size(),
+                        preload_error)) {
+                    viewer.show_message(
+                        "Setting not saved",
+                        preload_error.empty()
+                            ? "could not write the font preload preference"
+                            : preload_error);
+                    changed = true;
+                }
             }
             if (viewer.take_document_browser_request()) {
                 show_document_browser(true);

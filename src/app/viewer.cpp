@@ -43,7 +43,7 @@ constexpr int kPageWidth = kScreenWidth;
 constexpr unsigned kSynchronousLayoutOverscan = 0;
 constexpr int kIdlePreloadViewports = 3;
 constexpr int kMostlyVisiblePercent = 85;
-constexpr std::size_t kSettingsRowCount = 12;
+constexpr std::size_t kSettingsRowCount = 13;
 constexpr std::size_t kSettingsVisibleRows = 9;
 
 // Modal typography is intentionally independent from the document font-size
@@ -965,6 +965,8 @@ void Viewer::rebuild_settings_runs() {
             (natural_swiping_ ? "Natural" : "Reversed"),
         std::string("Scroll gesture direction: ") +
             (natural_scrolling_ ? "Natural" : "Reversed"),
+        std::string("Font preload: ") +
+            (resident_font_preload_ ? "Auto" : "Off"),
         std::move(font_summary),
     };
     static_assert(sizeof(labels) / sizeof(labels[0]) == kSettingsRowCount,
@@ -975,6 +977,18 @@ void Viewer::rebuild_settings_runs() {
                     fx_from_int(kMenuCompactPixelSize), run);
         settings_runs_.push_back(std::move(run));
     }
+}
+
+void Viewer::set_resident_font_preload(bool enabled) {
+    if (resident_font_preload_ == enabled) return;
+    resident_font_preload_ = enabled;
+    rebuild_settings_runs();
+}
+
+bool Viewer::take_font_preload_save_request() {
+    const bool requested = pending_font_preload_save_request_;
+    pending_font_preload_save_request_ = false;
+    return requested;
 }
 
 void Viewer::set_dark_theme(bool dark) {
@@ -1017,6 +1031,7 @@ void Viewer::begin_settings_session() {
     settings_snapshot_.reading_mode = reading_mode_;
     settings_snapshot_.natural_scrolling = natural_scrolling_;
     settings_snapshot_.natural_swiping = natural_swiping_;
+    settings_snapshot_.resident_font_preload = resident_font_preload_;
     settings_snapshot_.render_sharpness = render_sharpness_;
     settings_snapshot_.scroll_y = scroll_y_;
     settings_snapshot_.max_scroll_y = max_scroll_y();
@@ -1046,11 +1061,19 @@ void Viewer::commit_settings_session() {
         reading_mode_ != settings_snapshot_.reading_mode;
     const bool render_sharpness_changed =
         render_sharpness_ != settings_snapshot_.render_sharpness;
+    // The preload switch persists globally (with the font preferences), so
+    // request a save even when nothing else forces a repaint below.
+    if (resident_font_preload_ !=
+        settings_snapshot_.resident_font_preload) {
+        pending_font_preload_save_request_ = true;
+    }
     const bool changed = layout_changed || reading_mode_changed ||
         dark_theme_ != settings_snapshot_.dark_theme ||
         high_contrast_ != settings_snapshot_.high_contrast ||
         natural_scrolling_ != settings_snapshot_.natural_scrolling ||
         natural_swiping_ != settings_snapshot_.natural_swiping ||
+        resident_font_preload_ !=
+            settings_snapshot_.resident_font_preload ||
         render_sharpness_changed;
     if (!changed) return;
     invalidate_retained_base_frame();
@@ -2869,6 +2892,7 @@ bool Viewer::handle_event(const InputEvent& event) {
     const ReadingMode old_reading_mode = reading_mode_;
     const bool old_natural_scrolling = natural_scrolling_;
     const bool old_natural_swiping = natural_swiping_;
+    const bool old_resident_font_preload = resident_font_preload_;
     const RenderSharpness old_render_sharpness = render_sharpness_;
     const int old_max_scroll = max_scroll_y();
     const bool markdown_reflow = markdown_document_ != nullptr;
@@ -2924,6 +2948,10 @@ bool Viewer::handle_event(const InputEvent& event) {
             break;
         case 10:
             natural_scrolling_ = !natural_scrolling_;
+            break;
+        case 11:
+            resident_font_preload_ = !resident_font_preload_;
+            rebuild_settings_runs();
             break;
         default:
             break;
@@ -3741,6 +3769,7 @@ bool Viewer::handle_event(const InputEvent& event) {
         layout_settings_changed || old_reading_mode != reading_mode_ ||
         old_natural_scrolling != natural_scrolling_ ||
         old_natural_swiping != natural_swiping_ ||
+        old_resident_font_preload != resident_font_preload_ ||
         old_render_sharpness != render_sharpness_;
     const bool defer_settings_apply =
         old_settings_overlay && settings_overlay_;
@@ -3897,6 +3926,8 @@ bool Viewer::handle_event(const InputEvent& event) {
                          old_reading_mode != reading_mode_ ||
                          old_natural_scrolling != natural_scrolling_ ||
                          old_natural_swiping != natural_swiping_ ||
+                         old_resident_font_preload !=
+                             resident_font_preload_ ||
                          old_render_sharpness != render_sharpness_ ||
                          bookmark_changed ||
                          !pending_document_link_.empty() ||

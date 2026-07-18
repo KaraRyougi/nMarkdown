@@ -130,6 +130,11 @@ public:
     ReadingMode reading_mode() const { return reading_mode_; }
     bool natural_scrolling() const { return natural_scrolling_; }
     bool natural_swiping() const { return natural_swiping_; }
+    // User switch for promoting external font payloads into RAM. Off keeps
+    // every external font streaming regardless of document size or content.
+    bool resident_font_preload() const { return resident_font_preload_; }
+    void set_resident_font_preload(bool enabled);
+    bool take_font_preload_save_request();
     std::string_view search_query() const { return search_query_; }
     std::size_t search_result_count() const { return search_results_.size(); }
     bool has_active_search_match() const { return has_active_search_match_; }
@@ -215,6 +220,7 @@ private:
         ReadingMode reading_mode = ReadingMode::VerticalScroll;
         bool natural_scrolling = true;
         bool natural_swiping = true;
+        bool resident_font_preload = true;
         RenderSharpness render_sharpness = kDefaultRenderSharpness;
         int scroll_y = 0;
         int max_scroll_y = 0;
@@ -250,6 +256,8 @@ private:
     ReadingMode reading_mode_ = ReadingMode::VerticalScroll;
     bool natural_scrolling_ = true;
     bool natural_swiping_ = true;
+    bool resident_font_preload_ = true;
+    bool pending_font_preload_save_request_ = false;
     RenderSharpness render_sharpness_ = kDefaultRenderSharpness;
     struct ScreenStepPosition {
         int from = 0;

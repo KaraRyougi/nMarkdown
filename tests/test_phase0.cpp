@@ -444,7 +444,7 @@ void test_font_pack_menu() {
     std::string error;
     CHECK(viewer.text_ready());
     CHECK(viewer.handle_event({nmarkdown::InputEventType::OpenSettings, 0}));
-    for (int row = 0; row < 11; ++row) {
+    for (int row = 0; row < 12; ++row) {
         CHECK(viewer.handle_event({nmarkdown::InputEventType::ScrollLineDown, 0}));
     }
     CHECK(viewer.handle_event({nmarkdown::InputEventType::Activate, 0}));
@@ -2422,7 +2422,7 @@ void test_cjk_picker_is_bounded_and_reuses_one_listing() {
     MockInput input;
     input.events.clear();
     input.events.push_back({nmarkdown::InputEventType::OpenSettings, 0});
-    for (int row = 0; row < 11; ++row) {
+    for (int row = 0; row < 12; ++row) {
         input.events.push_back({nmarkdown::InputEventType::ScrollLineDown, 0});
     }
     input.events.push_back({nmarkdown::InputEventType::Activate, 0});
@@ -2461,7 +2461,7 @@ void test_slow_font_discovery_has_delayed_feedback() {
     MockInput input;
     input.events.clear();
     input.events.push_back({nmarkdown::InputEventType::OpenSettings, 0});
-    for (int row = 0; row < 11; ++row) {
+    for (int row = 0; row < 12; ++row) {
         input.events.push_back(
             {nmarkdown::InputEventType::ScrollLineDown, 0});
     }
@@ -2503,7 +2503,7 @@ void test_selected_cjk_font_is_remembered_across_runs() {
     MockInput first_input;
     first_input.events.clear();
     first_input.events.push_back({nmarkdown::InputEventType::OpenSettings, 0});
-    for (int row = 0; row < 11; ++row) {
+    for (int row = 0; row < 12; ++row) {
         first_input.events.push_back(
             {nmarkdown::InputEventType::ScrollLineDown, 0});
     }

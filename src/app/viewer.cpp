@@ -62,6 +62,56 @@ std::size_t wrap_next_row(std::size_t selected,
     if (row_count <= minimum_row) return selected;
     return selected + 1U < row_count ? selected + 1U : minimum_row;
 }
+
+// Greedy word wrap for short UI strings: at most maximum_lines shaped runs
+// fitting maximum_width_px, breaking at spaces when possible and at UTF-8
+// codepoints otherwise (so unspaced scripts still wrap), with the final line
+// ellipsized when text remains.
+std::vector<GlyphRun> wrap_text_runs(TextSystem& text,
+                                     std::string_view body,
+                                     Fx pixel_size,
+                                     int maximum_width_px,
+                                     std::size_t maximum_lines) {
+    std::vector<GlyphRun> lines;
+    std::string_view remaining = body;
+    while (!remaining.empty() && lines.size() < maximum_lines) {
+        const bool final_line = lines.size() + 1U == maximum_lines;
+        std::size_t take = remaining.size();
+        GlyphRun run;
+        for (;;) {
+            std::string candidate(remaining.substr(0, take));
+            if (final_line && take < remaining.size()) candidate += u8"…";
+            run = {};
+            const bool shaped = text.shape(
+                candidate.data(), candidate.size(), pixel_size, run);
+            if (!shaped || fx_ceil(run.width) <= maximum_width_px ||
+                take <= 1) {
+                break;
+            }
+            if (!final_line && take >= 2) {
+                const std::size_t space = remaining.rfind(' ', take - 2);
+                if (space != std::string_view::npos && space > 0) {
+                    take = space;
+                    continue;
+                }
+            }
+            --take;
+            while (take > 1 &&
+                   (static_cast<unsigned char>(remaining[take]) & 0xC0U) ==
+                       0x80U) {
+                --take;
+            }
+        }
+        lines.push_back(std::move(run));
+        if (final_line) break;
+        std::size_t advance = take;
+        while (advance < remaining.size() && remaining[advance] == ' ') {
+            ++advance;
+        }
+        remaining.remove_prefix(advance);
+    }
+    return lines;
+}
 constexpr std::size_t kSettingsVisibleRows = 9;
 
 // Modal typography is intentionally independent from the document font-size
@@ -750,7 +800,7 @@ void Viewer::rebuild_text_runs() {
     link_target_runs_.clear();
     link_hint_run_ = {};
     document_error_title_run_ = {};
-    document_error_message_run_ = {};
+    document_error_message_runs_.clear();
     document_error_hint_run_ = {};
     empty_document_run_ = {};
     empty_document_hint_run_ = {};
@@ -807,10 +857,9 @@ void Viewer::rebuild_text_runs() {
                               text_size("No headings in this document"),
                               fx_from_int(kMenuCompactPixelSize), toc_empty_run_);
     if (!document_error_message_.empty()) {
-        text_ready_ = text_ready_ &&
-                      text_.shape(document_error_message_.data(),
-                                  document_error_message_.size(),
-                                  fx_from_int(11), document_error_message_run_);
+        document_error_message_runs_ = wrap_text_runs(
+            text_, document_error_message_, fx_from_int(11),
+            kScreenWidth - 24, 2);
     }
     for (const char* sample : kSampleText) {
         GlyphRun run;
@@ -974,7 +1023,7 @@ void Viewer::rebuild_settings_runs() {
     const std::string labels[] = {
         std::string("Theme: ") + (dark_theme_ ? "Dark" : "Light"),
         "Font size: " + std::to_string(body_pixel_size_) + " px",
-        line_gap_px_ == 0
+        line_gap_px_ < 0
             ? "Line spacing: Auto"
             : "Line spacing: +" + std::to_string(line_gap_px_) + " px",
         "Side margins: " + std::to_string(side_margin_px_) + " px",
@@ -1660,51 +1709,12 @@ void Viewer::reshape_message_dialog_runs() {
                 fx_from_int(kMenuTitlePixelSize), link_title_);
 
     // The body box is 256 px wide inside the 272 px message panel; its text
-    // sits at symmetric 5 px insets. Wrap the body greedily at word
-    // boundaries — falling back to codepoints for unspaced scripts — into at
-    // most two lines, ellipsizing anything longer.
+    // sits at symmetric 5 px insets across at most two wrapped lines.
     constexpr int kMessageBodyWidthPx = 246;
     constexpr std::size_t kMessageBodyLines = 2;
-    const Fx body_size = fx_from_int(kMenuCompactPixelSize);
-    std::string_view remaining(link_dialog_target_);
-    while (!remaining.empty() &&
-           link_target_runs_.size() < kMessageBodyLines) {
-        const bool final_line =
-            link_target_runs_.size() + 1U == kMessageBodyLines;
-        std::size_t take = remaining.size();
-        GlyphRun run;
-        for (;;) {
-            std::string candidate(remaining.substr(0, take));
-            if (final_line && take < remaining.size()) candidate += u8"…";
-            run = {};
-            const bool shaped = text_.shape(
-                candidate.data(), candidate.size(), body_size, run);
-            if (!shaped || fx_ceil(run.width) <= kMessageBodyWidthPx ||
-                take <= 1) {
-                break;
-            }
-            if (!final_line && take >= 2) {
-                const std::size_t space = remaining.rfind(' ', take - 2);
-                if (space != std::string_view::npos && space > 0) {
-                    take = space;
-                    continue;
-                }
-            }
-            --take;
-            while (take > 1 &&
-                   (static_cast<unsigned char>(remaining[take]) & 0xC0U) ==
-                       0x80U) {
-                --take;
-            }
-        }
-        link_target_runs_.push_back(std::move(run));
-        if (final_line) break;
-        std::size_t advance = take;
-        while (advance < remaining.size() && remaining[advance] == ' ') {
-            ++advance;
-        }
-        remaining.remove_prefix(advance);
-    }
+    link_target_runs_ = wrap_text_runs(
+        text_, link_dialog_target_, fx_from_int(kMenuCompactPixelSize),
+        kMessageBodyWidthPx, kMessageBodyLines);
 
     constexpr char kPromptHint[] = "Enter opens Fonts, Esc continues";
     constexpr char kCloseHint[] = "Enter or Esc closes";
@@ -1767,9 +1777,15 @@ void Viewer::show_loading_feedback(std::string title,
     if (text_ready_) {
         text_.shape(title.data(), title.size(), fx_from_int(kMenuTitlePixelSize),
                     loading_title_run_);
-        text_.shape(detail.data(), detail.size(),
-                    fx_from_int(kMenuAuxiliaryPixelSize),
-                    loading_detail_run_);
+        // The card has room for one detail line; long font or document
+        // labels are ellipsized instead of overflowing the panel.
+        constexpr int kLoadingDetailWidthPx = 240;
+        std::vector<GlyphRun> detail_runs = wrap_text_runs(
+            text_, detail, fx_from_int(kMenuAuxiliaryPixelSize),
+            kLoadingDetailWidthPx, 1);
+        if (!detail_runs.empty()) {
+            loading_detail_run_ = std::move(detail_runs.front());
+        }
     }
     dirty_ = true;
 }
@@ -2068,7 +2084,7 @@ LayoutSignature Viewer::layout_signature() const {
     LayoutSignature signature;
     signature.content_width = static_cast<std::uint16_t>(content_width());
     signature.body_px = static_cast<std::uint16_t>(body_pixel_size_);
-    signature.line_height_px = line_gap_px_ == 0
+    signature.line_height_px = line_gap_px_ < 0
                                    ? 0
                                    : static_cast<std::uint16_t>(body_pixel_size_ +
                                                                 line_gap_px_);
@@ -2281,10 +2297,11 @@ void Viewer::set_document_error(std::string message) {
     focused_code_layout_ = {};
     focused_code_layout_valid_ = false;
     pending_final_page_restore_ = false;
-    document_error_message_run_ = {};
+    document_error_message_runs_.clear();
     if (text_ready_ && !document_error_message_.empty()) {
-        text_.shape(document_error_message_.data(), document_error_message_.size(),
-                    fx_from_int(11), document_error_message_run_);
+        document_error_message_runs_ = wrap_text_runs(
+            text_, document_error_message_, fx_from_int(11),
+            kScreenWidth - 24, 2);
     }
     dirty_ = true;
 }
@@ -2320,9 +2337,7 @@ bool Viewer::apply_reader_state(const ReaderState& state,
     render_sharpness_ = clamp_render_sharpness(state.render_sharpness);
     text_.set_render_sharpness(render_sharpness_);
     body_pixel_size_ = std::max(12, std::min(22, static_cast<int>(state.font_size)));
-    line_gap_px_ = state.line_gap == 0
-                       ? 0
-                       : std::max(2, std::min(10, static_cast<int>(state.line_gap)));
+    line_gap_px_ = state.line_gap < 0 ? -1 : std::min(10, state.line_gap);
     side_margin_px_ = std::max(2, std::min(18, static_cast<int>(state.side_margin)));
     bookmarks_ = state.bookmarks;
     toc_selected_ = toc_runs_.empty()
@@ -2379,7 +2394,7 @@ ReaderState Viewer::reader_state(std::uint64_t identity) const {
     ReaderState state;
     state.position.document_identity = identity;
     state.font_size = static_cast<std::uint8_t>(body_pixel_size_);
-    state.line_gap = static_cast<std::uint8_t>(line_gap_px_);
+    state.line_gap = line_gap_px_;
     state.side_margin = static_cast<std::uint8_t>(side_margin_px_);
     state.dark_theme = dark_theme_;
     state.high_contrast = high_contrast_;
@@ -2443,7 +2458,7 @@ int Viewer::total_pages() const {
     // bottom-aligned final page.
     const int tail = document_height_ % kViewportHeight;
     const int minimum_tail = std::max(18, body_pixel_size_ +
-        (line_gap_px_ == 0 ? 3 : line_gap_px_));
+        (line_gap_px_ < 0 ? 3 : line_gap_px_));
     if (pages > 2 && tail > 0 && tail < minimum_tail) --pages;
     return pages;
 }
@@ -2998,10 +3013,12 @@ bool Viewer::handle_event(const InputEvent& event) {
             break;
         case 2:
             if (direction < 0) {
-                line_gap_px_ = line_gap_px_ <= 2 ? 0 : line_gap_px_ - 1;
+                // Manual spacing reaches a true zero-pixel gap; one step
+                // below that returns to automatic leading.
+                line_gap_px_ = line_gap_px_ <= 0 ? -1 : line_gap_px_ - 1;
             } else {
-                line_gap_px_ = line_gap_px_ == 0 ? 2
-                                                  : std::min(10, line_gap_px_ + 1);
+                line_gap_px_ = line_gap_px_ < 0 ? 0
+                                                 : std::min(10, line_gap_px_ + 1);
             }
             break;
         case 3:
@@ -4159,10 +4176,16 @@ void Viewer::render_document(const Surface565& surface, Rect viewport) {
             text_.draw_run(surface, document_error_title_run_, 12,
                            viewport.y + 38, fx_from_int(16), colors.failure,
                            colors.paper, dark_theme_, true, viewport);
-            text_.draw_run(surface, document_error_message_run_, 12,
-                           viewport.y + 70, fx_from_int(11), colors.ink,
-                           colors.paper, dark_theme_, true,
-                           {12, viewport.y, kScreenWidth - 24, viewport.height});
+            for (std::size_t line = 0;
+                 line < document_error_message_runs_.size(); ++line) {
+                text_.draw_run(surface, document_error_message_runs_[line],
+                               12,
+                               viewport.y + 70 + static_cast<int>(line) * 16,
+                               fx_from_int(11), colors.ink,
+                               colors.paper, dark_theme_, true,
+                               {12, viewport.y, kScreenWidth - 24,
+                                viewport.height});
+            }
             text_.draw_run(surface, document_error_hint_run_, 12,
                            viewport.y + 105, fx_from_int(10), colors.muted_ink,
                            colors.paper, dark_theme_, true, viewport);
@@ -4196,7 +4219,7 @@ void Viewer::render_document(const Surface565& surface, Rect viewport) {
     const int first_block = std::max(0, (scroll_y_ - stride) / stride);
     const int last_block = (scroll_y_ + viewport.height + stride) / stride;
     const int line_height = body_pixel_size_ +
-                            (line_gap_px_ == 0
+                            (line_gap_px_ < 0
                                  ? std::max(2, (body_pixel_size_ + 4) / 5)
                                  : line_gap_px_);
 

@@ -34,8 +34,10 @@ struct ReaderState {
     std::vector<std::uint32_t> bookmarks;
     std::uint32_t last_selected_heading = 0;
     std::uint8_t font_size = 15;
-    // Zero selects automatic content-aware spacing; 2-10 is a manual gap.
-    std::uint8_t line_gap = 0;
+    // Negative selects automatic content-aware spacing; 0-10 is a manual
+    // gap in pixels. The serialized byte keeps 0 = automatic for older
+    // files and stores the manual zero gap as 255.
+    int line_gap = -1;
     std::uint8_t side_margin = 5;
     bool dark_theme = false;
     bool high_contrast = false;

@@ -125,8 +125,12 @@ bool encode_reader_state(const ReaderState& state,
     bytes.push_back(std::max<std::uint8_t>(6, state.font_size));
     bytes.push_back(state.code_wrap ? 1 : 0);
     bytes.push_back(state.table_mode);
-    bytes.push_back(state.line_gap == 0 ? 0 : std::max<std::uint8_t>(2,
-        std::min<std::uint8_t>(10, state.line_gap)));
+    bytes.push_back(state.line_gap < 0
+                        ? 0U
+                        : state.line_gap == 0
+                              ? 255U
+                              : static_cast<std::uint8_t>(std::max(
+                                    1, std::min(10, state.line_gap))));
     bytes.push_back(std::max<std::uint8_t>(2,
         std::min<std::uint8_t>(18, state.side_margin)));
     bytes.push_back(state.reading_mode == ReadingMode::HorizontalScroll ? 1 : 0);
@@ -191,7 +195,10 @@ bool decode_reader_state(const std::uint8_t* bytes,
             error = "reader state layout settings are truncated";
             return false;
         }
-        state.line_gap = bytes[offset++];
+        const std::uint8_t stored_gap = bytes[offset++];
+        state.line_gap = stored_gap == 0 ? -1
+                         : stored_gap == 255U ? 0
+                                              : static_cast<int>(stored_gap);
         state.side_margin = bytes[offset++];
     } else {
         // Version 1 predates the setting and used a four-pixel fixed gap.
@@ -260,8 +267,7 @@ bool decode_reader_state(const std::uint8_t* bytes,
         return false;
     }
     state.font_size = std::max<std::uint8_t>(6, state.font_size);
-    state.line_gap = state.line_gap == 0 ? 0 : std::max<std::uint8_t>(2,
-        std::min<std::uint8_t>(10, state.line_gap));
+    state.line_gap = state.line_gap < 0 ? -1 : std::min(10, state.line_gap);
     state.side_margin = std::max<std::uint8_t>(2,
         std::min<std::uint8_t>(18, state.side_margin));
     return true;

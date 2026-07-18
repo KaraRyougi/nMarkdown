@@ -217,7 +217,7 @@ private:
         bool dark_theme = false;
         bool high_contrast = false;
         int body_pixel_size = 15;
-        int line_gap_px = 0;
+        int line_gap_px = -1;
         int side_margin_px = 5;
         bool code_wrap = true;
         std::uint8_t table_mode = 0;
@@ -253,7 +253,9 @@ private:
     bool quit_requested_ = false;
     bool dirty_ = true;
     int body_pixel_size_ = 15;
-    int line_gap_px_ = 0;
+    // Negative selects automatic content-aware leading; 0-10 is a manual
+    // gap in pixels, including a true zero.
+    int line_gap_px_ = -1;
     int side_margin_px_ = 5;
     bool code_wrap_ = true;
     std::uint8_t table_mode_ = 0;
@@ -300,7 +302,7 @@ private:
     GlyphRun loading_title_run_;
     GlyphRun loading_detail_run_;
     GlyphRun document_error_title_run_;
-    GlyphRun document_error_message_run_;
+    std::vector<GlyphRun> document_error_message_runs_;
     GlyphRun document_error_hint_run_;
     GlyphRun empty_document_run_;
     GlyphRun empty_document_hint_run_;

@@ -330,9 +330,11 @@ public:
           pixel_size_(pixel_size),
           available_width_(std::max<Fx>(fx_from_int(24), available_width)),
           automatic_spacing_(line_height == 0),
+          // A manual line height may request a true zero gap; clamp only far
+          // enough that consecutive lines can never overlap.
           line_height_(line_height == 0
                            ? automatic_line_height(pixel_size)
-                           : std::max(line_height, fx_ceil(pixel_size) + 2)),
+                           : std::max(line_height, fx_ceil(pixel_size))),
           cursor_y_(top_padding),
           wrap_(wrap),
           suppress_bottom_gap_(suppress_bottom_gap),

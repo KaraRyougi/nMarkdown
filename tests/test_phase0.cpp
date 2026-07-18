@@ -1297,7 +1297,7 @@ void test_markdown_toc_reflow_and_state() {
     CHECK(state.bookmarks.size() == 1);
     CHECK(state.dark_theme);
     CHECK(state.font_size == 16);
-    CHECK(state.line_gap == 2);
+    CHECK(state.line_gap == 0);
     CHECK(state.side_margin == 6);
     CHECK(state.table_mode == 1);
     CHECK(!state.code_wrap);  // The settings exercise selected Pan from Wrap.
@@ -1311,7 +1311,7 @@ void test_markdown_toc_reflow_and_state() {
     CHECK(restored.apply_reader_state(state, identity));
     CHECK(restored.dark_theme());
     CHECK(restored.body_pixel_size() == 16);
-    CHECK(restored.line_gap_px() == 2);
+    CHECK(restored.line_gap_px() == 0);
     CHECK(restored.side_margin_px() == 6);
     CHECK(restored.scroll_y() > 0);
     CHECK(restored.reader_state(identity).table_mode == 1);

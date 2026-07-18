@@ -499,15 +499,21 @@ int main(int argc, char** argv) {
     nmarkdown::InputNdless input(clock);
     nmarkdown::StdioFileSystem files;
     nmarkdown::ReaderOptions options;
-    options.maximum_source_bytes = is_cx2 ? 8U * 1024U * 1024U
-                                           : 4U * 1024U * 1024U;
-    options.maximum_font_bytes = is_cx2 ? 20U * 1024U * 1024U
-                                         : 6U * 1024U * 1024U;
-    // External Stdio faces are streamed rather than retained as whole-file
-    // buffers. CX II therefore uses a 20 MiB on-disk admission budget. Keep
-    // the original CX conservative until its physical heap profile is run.
-    options.maximum_external_font_bytes = is_cx2 ? 20U * 1024U * 1024U
-                                                  : 8U * 1024U * 1024U;
+    // The classic CX and the CX II carry the same 64 MiB of SDRAM; only the
+    // CPU clock differs, and the per-clock calibrations live in the clock and
+    // display adapters. The old smaller classic-CX budgets were a placeholder
+    // for an unprofiled heap, which runtime guards now cover on both models:
+    // every admission path reports allocation failure cleanly, and resident
+    // font promotion is additionally gated by an explicit working-set heap
+    // reserve probe with silent fallback to streaming. Keep one budget set so
+    // the two models only ever differ by what their live heap can prove.
+    options.maximum_source_bytes = 8U * 1024U * 1024U;
+    options.maximum_font_bytes = 20U * 1024U * 1024U;
+    // External Stdio faces open as streams; faces within the resident budget
+    // are then promoted into RAM so cold glyph loads stop paying per-read
+    // NAND latency.
+    options.maximum_external_font_bytes = 20U * 1024U * 1024U;
+    options.maximum_resident_font_bytes = 12U * 1024U * 1024U;
 #if defined(NMARKDOWN_FIREBIRD_INTEGRATION) && \
     !defined(NMARKDOWN_FIREBIRD_STATE_FIXTURE)
     options.persist_state = false;

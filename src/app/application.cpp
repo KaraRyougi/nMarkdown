@@ -77,6 +77,44 @@ private:
 constexpr std::uint64_t kLoadingFeedbackDelayMs = 120;
 constexpr std::uint64_t kLargeDocumentFeedbackBytes = 128U * 1024U;
 constexpr std::uint64_t kLargeFontFeedbackBytes = 256U * 1024U;
+
+// After promoting a font payload into RAM, the reader must still be able to
+// allocate its ordinary working set: the 1 MiB plain-text sequential cache
+// plus its scratch block, a shaped-screen window, and room for the glyph
+// atlas to keep growing in 64 KiB pages. Probe that mix — including the
+// contiguity of the largest block — before keeping a resident font, so a
+// tight TI-OS heap degrades back to streaming instead of failing later
+// document opens. Markdown documents can need more than this reserve; their
+// open path already reports allocation failures with a clear message.
+bool heap_reserve_available() {
+    struct Block {
+        std::size_t size;
+        std::size_t count;
+    };
+    constexpr Block kReserveBlocks[] = {
+        {1U * 1024U * 1024U, 1},  // plain-text sequential cache (contiguous)
+        {512U * 1024U, 1},        // screen window, scratch, decode overhead
+        {64U * 1024U, 8},         // glyph atlas growth headroom
+    };
+    std::vector<void*> held;
+    held.reserve(16);
+    bool available = true;
+    for (const Block& block : kReserveBlocks) {
+        for (std::size_t index = 0; index < block.count; ++index) {
+            void* memory = ::operator new(block.size, std::nothrow);
+            if (memory == nullptr) {
+                available = false;
+                break;
+            }
+            held.push_back(memory);
+        }
+        if (!available) break;
+    }
+    for (void* memory : held) {
+        ::operator delete(memory);
+    }
+    return available;
+}
 constexpr std::size_t kLoadingAnimationProgressInterval = 8;
 constexpr std::size_t kPlainTextEncodingProbeBytes = 64U * 1024U;
 
@@ -982,6 +1020,7 @@ int run_reader(Display& display,
             labels[index] = default_role_label(external_font_role(index));
         }
         std::size_t unique_bytes = 0;
+        std::size_t resident_bytes = 0;
 
         for (std::size_t role_index = 0;
              role_index < kExternalFontRoleCount; ++role_index) {
@@ -1058,6 +1097,47 @@ int run_reader(Display& display,
                             return false;
                         }
                         loaded.source = std::move(source);
+                        // Best-effort promotion to a RAM-resident payload:
+                        // one sequential read now removes every per-glyph
+                        // storage seek later. Any failure — over budget,
+                        // allocation, short read, or a heap too tight to
+                        // keep the reader's working-set reserve — silently
+                        // keeps the already-open stream.
+                        const std::size_t payload_bytes =
+                            static_cast<std::size_t>(probe.size);
+                        if (payload_bytes != 0 &&
+                            payload_bytes <=
+                                options.maximum_resident_font_bytes &&
+                            resident_bytes <=
+                                options.maximum_resident_font_bytes -
+                                    payload_bytes) {
+                            loading.stage(
+                                "Loading " +
+                                    font_label_from_path(actual_path) +
+                                    " into memory",
+                                probe.size >= kLargeFontFeedbackBytes);
+                            try {
+                                std::vector<std::uint8_t> payload;
+                                std::string resident_error;
+                                if (files.read_all(
+                                        actual_path.c_str(),
+                                        options.maximum_font_bytes,
+                                        payload, resident_error) &&
+                                    payload.size() == payload_bytes &&
+                                    heap_reserve_available()) {
+                                    loaded.data = std::make_shared<
+                                        const std::vector<std::uint8_t>>(
+                                        std::move(payload));
+                                    loaded.source.reset();
+                                }
+                            } catch (const std::bad_alloc&) {
+                                // Promotion must never turn a working
+                                // streamed font into an apply failure.
+                            }
+                        }
+                        integration_log(loaded.data != nullptr
+                                            ? "FONT_RESOURCE_RESIDENT"
+                                            : "FONT_RESOURCE_STREAMED");
                     } else {
                         if (!stream_error.empty()) {
                             error = font_specific_error(
@@ -1082,6 +1162,9 @@ int run_reader(Display& display,
                         static_cast<std::uint32_t>(probe.size) ^
                         static_cast<std::uint32_t>(probe.size >> 32U);
                     if (loaded.signature == 0) loaded.signature = 1;
+                }
+                if (loaded.data != nullptr) {
+                    resident_bytes += loaded.data->size();
                 }
                 unique_bytes += loaded.byte_size();
                 if (unique_bytes > options.maximum_external_font_bytes) {

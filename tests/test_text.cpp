@@ -1101,6 +1101,44 @@ void test_streamed_freetype_face_reuses_cached_glyph_blocks() {
 
 }  // namespace
 
+// The idle glyph-warming pace keys off has_streamed_external_fonts(): a
+// stream-backed face limits speculative work to one cold glyph per poll,
+// while a RAM-resident payload allows the faster pace. Pin the detection for
+// both registry shapes so resident-font promotion actually changes pacing.
+void test_registry_reports_streamed_versus_resident_fonts() {
+    std::vector<std::uint8_t> bytes;
+    CHECK(read_font_asset("DejaVuSans-CX.ttf", bytes));
+    if (bytes.empty()) return;
+    const std::uint32_t signature = 0x5EEDU;
+    constexpr nmarkdown::FontFaceId kFace = 9400;
+    const std::size_t role = static_cast<std::size_t>(
+        nmarkdown::external_font_role_index(nmarkdown::FontRole::Cjk));
+
+    nmarkdown::TextSystem text;
+    std::string error;
+    CHECK(text.initialize(error));
+    CHECK(!text.has_streamed_external_fonts());
+
+    nmarkdown::FontRegistryState streamed;
+    streamed.fonts.push_back(
+        {kFace, nullptr,
+         std::make_shared<CountingRandomAccess>(bytes), signature});
+    streamed.roles[role] = kFace;
+    nmarkdown::FontRegistryState previous;
+    CHECK(text.replace_font_registry(streamed, previous, error));
+    CHECK(text.has_streamed_external_fonts());
+
+    nmarkdown::FontRegistryState resident;
+    resident.fonts.push_back(
+        {kFace,
+         std::make_shared<const std::vector<std::uint8_t>>(bytes),
+         nullptr, signature});
+    resident.roles[role] = kFace;
+    CHECK(text.replace_font_registry(resident, previous, error));
+    CHECK(!text.has_streamed_external_fonts());
+    CHECK(text.ready());
+}
+
 int main() {
     test_shaping_and_fallback();
     test_role_aware_shaping();
@@ -1110,6 +1148,7 @@ int main() {
     test_shared_font_registry_roles();
     test_optional_sarasa_fixed_sc();
     test_compositor_and_cache();
+    test_registry_reports_streamed_versus_resident_fonts();
     test_page_lru_eviction();
     test_cached_run_detects_page_lru_eviction();
     test_blend_endpoints();

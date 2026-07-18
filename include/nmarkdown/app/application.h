@@ -16,6 +16,14 @@ struct ReaderOptions {
     // headroom may override them independently.
     std::size_t maximum_font_bytes = 20U * 1024U * 1024U;
     std::size_t maximum_external_font_bytes = 20U * 1024U * 1024U;
+    // Total bytes of external font payloads that may be promoted from a
+    // random-access stream into a retained RAM buffer. A resident face skips
+    // per-glyph storage reads entirely, which is the dominant cold-page cost
+    // on NAND-backed calculators. Promotion is best-effort: it happens only
+    // when the payload fits this budget, the allocation succeeds, and a heap
+    // reserve remains afterwards; otherwise the face keeps streaming. Zero
+    // disables promotion.
+    std::size_t maximum_resident_font_bytes = 0;
     bool persist_state = true;
     bool open_browser_on_empty_path = false;
     ReadingMode initial_reading_mode = ReadingMode::VerticalScroll;

@@ -1002,6 +1002,36 @@ void test_catalog_bookmark_menu_jumps_and_toggles() {
     const int after_close = viewer.scroll_y();
     CHECK(send(viewer, nmarkdown::InputEventType::ScrollLineDown));
     CHECK(viewer.scroll_y() > after_close);
+
+    // Bookmarks are independent of the Markdown section system: the key
+    // must open the list for a plain-text document as well and jump back.
+    {
+        nmarkdown::Viewer plain;
+        std::string text;
+        for (int line = 0; line < 200; ++line) {
+            text += "Plain bookmark line " + std::to_string(line) + ".\n";
+        }
+        CHECK(load_plain_text(plain, std::move(text)));
+        ImmediateClock clock;
+        for (int work = 0; work < 4096; ++work) {
+            if (!plain.perform_incremental_work(clock, 0)) break;
+        }
+        for (int step = 0; step < 8; ++step) {
+            CHECK(send(plain, nmarkdown::InputEventType::ScrollLineDown));
+        }
+        const std::uint32_t marked =
+            plain.reader_state(0).position.source_offset;
+        CHECK(marked > 0);
+        CHECK(send(plain, nmarkdown::InputEventType::ToggleBookmark));
+        CHECK(send(plain, nmarkdown::InputEventType::PageDown));
+        CHECK(send(plain, nmarkdown::InputEventType::PageDown));
+        const std::uint32_t deep =
+            plain.reader_state(0).position.source_offset;
+        CHECK(deep > marked);
+        CHECK(send(plain, nmarkdown::InputEventType::OpenBookmarks));
+        CHECK(send(plain, nmarkdown::InputEventType::Activate));
+        CHECK(plain.reader_state(0).position.source_offset == marked);
+    }
 }
 
 void test_missing_cjk_font_prompt_offers_font_manager() {

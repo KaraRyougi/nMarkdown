@@ -3646,7 +3646,10 @@ bool Viewer::handle_event(const InputEvent& event) {
     case InputEventType::PanLeft:
         if (overlay_open_ && settings_overlay_) {
             adjust_setting(-1);
-        } else if (overlay_open_ && toc_overlay_ && !bookmarks_.empty()) {
+        } else if (overlay_open_ && toc_overlay_ && !bookmarks_.empty() &&
+                   markdown_document_ != nullptr) {
+            // Plain text has no section system; its list stays on the
+            // bookmark tab.
             bookmark_tab_ = false;
         } else if (overlay_open_) {
             // Unknown modal input is consumed as a no-op.
@@ -4977,7 +4980,11 @@ void Viewer::render_overlay(const Surface565& surface, bool apply_scrim) {
         }
         return;
     }
-    if (toc_overlay_ && markdown_document_ != nullptr) {
+    // Bookmarks are independent of the Markdown section system, so the list
+    // renders for plain-text documents as well; only the sections tab needs
+    // a Markdown document behind it.
+    if (toc_overlay_ &&
+        (markdown_document_ != nullptr || plain_text_layout_.loaded())) {
         const bool show_bookmarks = bookmark_tab_;
         const std::vector<GlyphRun>& rows = show_bookmarks ? bookmark_runs_ : toc_runs_;
         const std::size_t selected_index = show_bookmarks ? bookmark_selected_ : toc_selected_;
@@ -5023,9 +5030,10 @@ void Viewer::render_overlay(const Surface565& surface, bool apply_scrim) {
                 fill_rect(surface, {panel.x + 7, row_y + 5, 2, 13},
                           rgb565(250, 252, 255), panel);
             }
-            const unsigned level = show_bookmarks
-                                       ? 1U
-                                       : markdown_document_->ir.headings[index].level;
+            const unsigned level =
+                show_bookmarks || markdown_document_ == nullptr
+                    ? 1U
+                    : markdown_document_->ir.headings[index].level;
             text_.draw_run(surface,
                            rows[index],
                            panel.x + 10 +

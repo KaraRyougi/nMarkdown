@@ -44,6 +44,24 @@ constexpr unsigned kSynchronousLayoutOverscan = 0;
 constexpr int kIdlePreloadViewports = 3;
 constexpr int kMostlyVisiblePercent = 85;
 constexpr std::size_t kSettingsRowCount = 13;
+
+// Single-step list navigation wraps at both ends: stepping past the last row
+// returns to the first and vice versa. Page-sized jumps keep clamping so a
+// five-row leap can never teleport across the list boundary. Empty and
+// single-row lists are no-ops.
+std::size_t wrap_previous_row(std::size_t selected,
+                              std::size_t row_count,
+                              std::size_t minimum_row = 0) {
+    if (row_count <= minimum_row) return selected;
+    return selected > minimum_row ? selected - 1U : row_count - 1U;
+}
+
+std::size_t wrap_next_row(std::size_t selected,
+                          std::size_t row_count,
+                          std::size_t minimum_row = 0) {
+    if (row_count <= minimum_row) return selected;
+    return selected + 1U < row_count ? selected + 1U : minimum_row;
+}
 constexpr std::size_t kSettingsVisibleRows = 9;
 
 // Modal typography is intentionally independent from the document font-size
@@ -2964,14 +2982,12 @@ bool Viewer::handle_event(const InputEvent& event) {
             bool manager_action = false;
             switch (routed_event.type) {
             case InputEventType::ScrollLineUp:
-                if (font_browser_selected_ > minimum_row) {
-                    --font_browser_selected_;
-                }
+                font_browser_selected_ = wrap_previous_row(
+                    font_browser_selected_, row_count, minimum_row);
                 break;
             case InputEventType::ScrollLineDown:
-                if (font_browser_selected_ + 1U < row_count) {
-                    ++font_browser_selected_;
-                }
+                font_browser_selected_ = wrap_next_row(
+                    font_browser_selected_, row_count, minimum_row);
                 break;
             case InputEventType::PageUp:
                 font_browser_selected_ =
@@ -3077,13 +3093,12 @@ bool Viewer::handle_event(const InputEvent& event) {
     if (document_browser_overlay_) {
         switch (routed_event.type) {
         case InputEventType::ScrollLineUp:
-            if (document_browser_selected_ > 0) --document_browser_selected_;
+            document_browser_selected_ = wrap_previous_row(
+                document_browser_selected_, document_browser_paths_.size());
             break;
         case InputEventType::ScrollLineDown:
-            if (!document_browser_paths_.empty()) {
-                document_browser_selected_ = std::min(
-                    document_browser_selected_ + 1, document_browser_paths_.size() - 1);
-            }
+            document_browser_selected_ = wrap_next_row(
+                document_browser_selected_, document_browser_paths_.size());
             break;
         case InputEventType::PageUp:
             document_browser_selected_ = document_browser_selected_ > 5
@@ -3131,13 +3146,12 @@ bool Viewer::handle_event(const InputEvent& event) {
         if (link_choice_mode_) {
             switch (routed_event.type) {
             case InputEventType::ScrollLineUp:
-                if (link_choice_selected_ > 0) --link_choice_selected_;
+                link_choice_selected_ = wrap_previous_row(
+                    link_choice_selected_, link_choice_ids_.size());
                 break;
             case InputEventType::ScrollLineDown:
-                if (!link_choice_ids_.empty()) {
-                    link_choice_selected_ = std::min(
-                        link_choice_selected_ + 1, link_choice_ids_.size() - 1);
-                }
+                link_choice_selected_ = wrap_next_row(
+                    link_choice_selected_, link_choice_ids_.size());
                 break;
             case InputEventType::PageUp:
                 link_choice_selected_ = link_choice_selected_ > 5
@@ -3323,14 +3337,15 @@ bool Viewer::handle_event(const InputEvent& event) {
             }
             break;
         case InputEventType::ScrollLineUp:
-            if (search_selected_ > 0) --search_selected_;
+            search_selected_ =
+                wrap_previous_row(search_selected_, search_results_.size());
             break;
         case InputEventType::ScrollLineDown:
         case InputEventType::SearchNext:
-            if (!search_results_.empty()) {
-                search_selected_ = std::min(search_selected_ + 1,
-                                            search_results_.size() - 1);
-            }
+            // Search-next cycles: continuing past the last match returns to
+            // the first.
+            search_selected_ =
+                wrap_next_row(search_selected_, search_results_.size());
             break;
         case InputEventType::PageUp:
             search_selected_ = search_selected_ > 4 ? search_selected_ - 4 : 0;
@@ -3406,12 +3421,15 @@ bool Viewer::handle_event(const InputEvent& event) {
     switch (routed_event.type) {
     case InputEventType::ScrollLineUp:
         if (overlay_open_ && settings_overlay_) {
-            if (settings_selected_ > 0) --settings_selected_;
+            settings_selected_ =
+                wrap_previous_row(settings_selected_, kSettingsRowCount);
         } else if (overlay_open_ && toc_overlay_) {
             if (bookmark_tab_) {
-                if (bookmark_selected_ > 0) --bookmark_selected_;
-            } else if (toc_selected_ > 0) {
-                --toc_selected_;
+                bookmark_selected_ = wrap_previous_row(
+                    bookmark_selected_, bookmark_runs_.size());
+            } else {
+                toc_selected_ =
+                    wrap_previous_row(toc_selected_, toc_runs_.size());
             }
         } else if (overlay_open_) {
             // Passive controls overlays consume document navigation.
@@ -3427,14 +3445,15 @@ bool Viewer::handle_event(const InputEvent& event) {
         break;
     case InputEventType::ScrollLineDown:
         if (overlay_open_ && settings_overlay_) {
-            settings_selected_ = std::min<std::size_t>(
-                settings_selected_ + 1, kSettingsRowCount - 1);
+            settings_selected_ =
+                wrap_next_row(settings_selected_, kSettingsRowCount);
         } else if (overlay_open_ && toc_overlay_) {
-            if (bookmark_tab_ && !bookmark_runs_.empty()) {
-                bookmark_selected_ = std::min(bookmark_selected_ + 1,
-                                              bookmark_runs_.size() - 1);
-            } else if (!bookmark_tab_ && !toc_runs_.empty()) {
-                toc_selected_ = std::min(toc_selected_ + 1, toc_runs_.size() - 1);
+            if (bookmark_tab_) {
+                bookmark_selected_ = wrap_next_row(
+                    bookmark_selected_, bookmark_runs_.size());
+            } else {
+                toc_selected_ =
+                    wrap_next_row(toc_selected_, toc_runs_.size());
             }
         } else if (overlay_open_) {
             // Passive controls overlays consume document navigation.

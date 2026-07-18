@@ -915,6 +915,67 @@ void test_render_sharpness_setting_is_key_only_and_persisted() {
 // The "Font preload" settings row turns resident-font promotion off
 // entirely. Committing a change requests one global preference save; an
 // untouched session requests none.
+// Single-step navigation in the modal lists wraps at both ends: stepping up
+// from the first row lands on the last and stepping down from the last
+// returns to the first. Each wrap is proven by activating the row it lands
+// on rather than by peeking at selection state.
+void test_system_lists_wrap_at_both_ends() {
+    current_case = "system lists wrap at both ends";
+
+    // Settings: Up from the first row lands on the final Fonts action row.
+    {
+        nmarkdown::Viewer viewer;
+        CHECK(load_markdown(viewer, "Plain body.\n"));
+        CHECK(open_settings(viewer));
+        CHECK(send(viewer, nmarkdown::InputEventType::ScrollLineUp));
+        CHECK(send(viewer, nmarkdown::InputEventType::Activate));
+        CHECK(viewer.take_font_menu_request());
+    }
+
+    // Settings: Down from the last row wraps back to the Theme row.
+    {
+        nmarkdown::Viewer viewer;
+        CHECK(load_markdown(viewer, "Plain body.\n"));
+        CHECK(open_settings(viewer));
+        CHECK(send(viewer, nmarkdown::InputEventType::ScrollLineUp));
+        CHECK(send(viewer, nmarkdown::InputEventType::ScrollLineDown));
+        CHECK(!viewer.dark_theme());
+        CHECK(send(viewer, nmarkdown::InputEventType::PanRight));
+        CHECK(viewer.dark_theme());
+        CHECK(send(viewer, nmarkdown::InputEventType::Back));
+    }
+
+    // Table of contents: Up from the first heading selects the last one.
+    // The document is taller than one viewport so the jump is observable.
+    {
+        nmarkdown::Viewer viewer;
+        std::string source = "# First\n\n";
+        for (int index = 0; index < 30; ++index) {
+            source += "Padding keeps the second heading far below the "
+                      "first viewport.\n\n";
+        }
+        source += "## Second\n\nMore.\n";
+        CHECK(load_markdown(viewer, source));
+        CHECK(send(viewer, nmarkdown::InputEventType::OpenMenu));
+        CHECK(send(viewer, nmarkdown::InputEventType::ScrollLineUp));
+        CHECK(send(viewer, nmarkdown::InputEventType::Activate));
+        CHECK(viewer.scroll_y() > 0);
+    }
+
+    // Document browser: Up from the first entry selects the last document.
+    {
+        nmarkdown::Viewer viewer;
+        const std::vector<std::string> paths = {
+            "/documents/a.md", "/documents/b.md", "/documents/c.md"};
+        viewer.show_document_browser(paths, false);
+        CHECK(send(viewer, nmarkdown::InputEventType::ScrollLineUp));
+        CHECK(send(viewer, nmarkdown::InputEventType::Activate));
+        std::string target;
+        CHECK(viewer.take_document_open_request(target));
+        CHECK(target == "/documents/c.md");
+    }
+}
+
 void test_font_preload_setting_toggles_and_requests_save() {
     current_case = "font preload setting";
     nmarkdown::Viewer viewer;
@@ -1671,6 +1732,7 @@ int main() {
     test_deferred_plain_text_page_marks_viewer_dirty();
     test_plain_text_rewarms_after_glyph_cache_clear();
     test_render_sharpness_setting_is_key_only_and_persisted();
+    test_system_lists_wrap_at_both_ends();
     test_font_preload_setting_toggles_and_requests_save();
     test_wide_content_pan_keeps_conventional_directions();
     test_wide_block_reserves_horizontal_input_for_pan();

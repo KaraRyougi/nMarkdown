@@ -104,22 +104,41 @@ std::size_t complete_utf8_prefix(const std::vector<std::uint8_t>& bytes) {
     return bytes.size() - lead < expected ? lead : bytes.size();
 }
 
-bool install_streamed_cjk(
+bool install_cjk(
     nmarkdown::Viewer& viewer,
     const std::shared_ptr<CountingRandomAccessData>& source,
     std::uint32_t signature,
+    bool resident,
     std::string& error) {
     nmarkdown::FontRegistryState registry;
     constexpr nmarkdown::FontFaceId kCjkFace = 9100;
-    registry.fonts.push_back(
-        {kCjkFace, nullptr, source, signature});
+    if (resident) {
+        // Mirror the application's promotion path: one sequential read of
+        // the whole payload through the counted (penalized) source, then a
+        // RAM-resident registry entry with no stream.
+        std::vector<std::uint8_t> payload(
+            static_cast<std::size_t>(source->size()));
+        if (!source->read(0, payload.data(), payload.size())) {
+            error = "could not read the font payload into memory";
+            return false;
+        }
+        registry.fonts.push_back(
+            {kCjkFace,
+             std::make_shared<const std::vector<std::uint8_t>>(
+                 std::move(payload)),
+             nullptr, signature});
+    } else {
+        registry.fonts.push_back(
+            {kCjkFace, nullptr, source, signature});
+    }
     registry.roles[static_cast<std::size_t>(
         nmarkdown::external_font_role_index(
             nmarkdown::FontRole::Cjk))] = kCjkFace;
     std::array<std::string, nmarkdown::kExternalFontRoleCount> labels{};
     labels[static_cast<std::size_t>(
         nmarkdown::external_font_role_index(
-            nmarkdown::FontRole::Cjk))] = "Streamed CJK";
+            nmarkdown::FontRole::Cjk))] =
+        resident ? "Resident CJK" : "Streamed CJK";
     return viewer.set_font_registry(
         std::move(registry), labels, error);
 }
@@ -131,7 +150,7 @@ int main(int argc, char** argv) {
         std::fprintf(stderr,
                      "usage: nmarkdown-large-txt-bench FILE.txt [CJK.ttf] "
                      "[idle-polls] [page-count>=30] "
-                     "[font-read-penalty-us]\n");
+                     "[font-read-penalty-us] [resident-font=0|1]\n");
         return 2;
     }
     const char* document_path = argv[1];
@@ -146,6 +165,7 @@ int main(int argc, char** argv) {
             ? static_cast<std::uint32_t>(
                   std::max(0, std::atoi(argv[5])))
             : 0;
+    const bool resident_font = argc > 6 && std::atoi(argv[6]) != 0;
 
     std::string error;
     nmarkdown::StdioFileSystem files;
@@ -193,8 +213,9 @@ int main(int argc, char** argv) {
     nmarkdown::Viewer viewer;
     bool font_loaded = false;
     const double font_ms = timed_ms([&] {
-        font_loaded = install_streamed_cjk(
-            viewer, counted_cjk, cjk_probe.sample_hash, error);
+        font_loaded = install_cjk(
+            viewer, counted_cjk, cjk_probe.sample_hash, resident_font,
+            error);
     });
     if (!font_loaded) {
         std::fprintf(stderr, "font failed: %s\n", error.c_str());
@@ -256,7 +277,9 @@ int main(int argc, char** argv) {
         const std::uint64_t bytes_before =
             counted_cjk->bytes_read;
         event_ms.push_back(timed_ms([&] {
-            viewer.handle_event({nmarkdown::InputEventType::SwipeUp, 0});
+            // Natural swiping is the default: swiping down turns to the next
+            // page, matching the REAL_NOVEL Firebird fixture.
+            viewer.handle_event({nmarkdown::InputEventType::SwipeDown, 0});
         }));
         std::uint32_t offset =
             viewer.reader_state(0).position.source_offset;
@@ -330,8 +353,9 @@ int main(int argc, char** argv) {
     for (std::uint64_t misses : glyph_misses) page_misses += misses;
 
     nmarkdown::Viewer line_viewer;
-    if (!install_streamed_cjk(
-            line_viewer, counted_cjk, cjk_probe.sample_hash, error) ||
+    if (!install_cjk(
+            line_viewer, counted_cjk, cjk_probe.sample_hash, resident_font,
+            error) ||
         !line_viewer.set_plain_text_document(
             source_data, 0, static_cast<std::uint32_t>(probe.size),
             validation, probe, error)) {

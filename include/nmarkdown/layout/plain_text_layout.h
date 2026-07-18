@@ -154,6 +154,7 @@ private:
                     LayoutLine& line,
                     bool& eof,
                     std::string& error);
+    void invalidate_probe_lines();
     bool build_screen(std::uint32_t start_offset,
                       Screen& screen,
                       std::string& error);
@@ -241,6 +242,16 @@ private:
     std::uint64_t incremental_layout_steps_ = 0;
     std::uint64_t glyph_cache_clear_generation_ = 0;
     bool prefetch_raw_next_ = false;
+    // One build_line() probe shapes several wrapped lines through HarfBuzz;
+    // only the first used to be kept. The remaining sealed lines are cached
+    // here and served to the naturally sequential next calls, so cold screens
+    // and pages need roughly one shaping pass per screen instead of one per
+    // line. A hit requires an exact start-offset match; content is immutable
+    // and the cache is dropped whenever the layout signature changes.
+    std::vector<LayoutLine> probe_lines_;
+    std::size_t probe_next_ = 0;
+    std::uint32_t probe_next_offset_ = 0;
+    bool probe_valid_ = false;
 };
 
 }  // namespace nmarkdown

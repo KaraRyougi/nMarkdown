@@ -682,6 +682,122 @@ void test_task_lists_use_native_checkbox_runs() {
     }
 }
 
+// A synthetic list prefix ("7. ", "• ") is shaped from text that does not
+// exist in the source, so its run carries no source mapping. Identify it by
+// comparing shaped glyph ids against the expected prefix string.
+bool first_run_is_prefix(const nmarkdown::BlockLayout* block,
+                         nmarkdown::TextSystem& text,
+                         const std::string& prefix) {
+    if (block == nullptr || block->lines.empty() ||
+        block->lines.front().runs.empty()) {
+        return false;
+    }
+    const nmarkdown::LayoutRun& run = block->lines.front().runs.front();
+    if (run.task_checkbox || run.exact_source_mapping) {
+        return false;
+    }
+    // The line builder appends the marker word and defers its trailing space
+    // into a separate collapsible run, so compare against the trimmed word.
+    std::string word = prefix;
+    while (!word.empty() && word.back() == ' ') word.pop_back();
+    nmarkdown::GlyphRun expected;
+    if (!text.shape(word.data(), word.size(), nmarkdown::fx_from_int(15),
+                    expected, nmarkdown::FontRole::BodySans,
+                    nmarkdown::TextSpacing::Natural,
+                    nmarkdown::FontStyle::Bold)) {
+        return false;
+    }
+    if (expected.glyphs.size() != run.glyphs.glyphs.size()) return false;
+    for (std::size_t index = 0; index < expected.glyphs.size(); ++index) {
+        if (expected.glyphs[index].glyph != run.glyphs.glyphs[index].glyph) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool first_run_is_document_text(const nmarkdown::BlockLayout* block) {
+    return block != nullptr && !block->lines.empty() &&
+           !block->lines.front().runs.empty() &&
+           block->lines.front().runs.front().exact_source_mapping;
+}
+
+// Golden semantics for list prefixes: only the first unit belonging to a list
+// item carries the marker; a paragraph following a nested sub-list inside the
+// same outer item does not restart the marker; ordered numbering follows
+// sibling position seeded by the list's start value; a later list restarts.
+void test_list_prefixes_match_document_order() {
+    const std::string source =
+        "7. seven first paragraph\n"
+        "\n"
+        "   seven second paragraph\n"
+        "\n"
+        "8. eight first\n"
+        "   1. nested one\n"
+        "   2. nested two\n"
+        "\n"
+        "   eight after nested\n"
+        "\n"
+        "- bullet one\n"
+        "\n"
+        "  bullet one second\n"
+        "- [x] done task\n"
+        "- [ ] open task\n"
+        "\n"
+        "1. restart one\n";
+    nmarkdown::MarkdownDocument document;
+    std::string error;
+    CHECK(nmarkdown::parse_markdown(
+        reinterpret_cast<const std::uint8_t*>(source.data()), source.size(),
+        document, error));
+    nmarkdown::TextSystem text;
+    CHECK(text.initialize(error));
+    nmarkdown::VirtualDocumentLayout layout;
+    nmarkdown::LayoutSignature signature;
+    CHECK(layout.initialize(document, text, signature, error));
+    CHECK(layout.unit_count() == 11);
+    if (layout.unit_count() != 11) return;
+
+    CHECK(first_run_is_prefix(layout.layout_unit(0), text, "7. "));
+    CHECK(first_run_is_document_text(layout.layout_unit(1)));
+    CHECK(first_run_is_prefix(layout.layout_unit(2), text, "8. "));
+    CHECK(first_run_is_prefix(layout.layout_unit(3), text, "1. "));
+    CHECK(first_run_is_prefix(layout.layout_unit(4), text, "2. "));
+    CHECK(first_run_is_document_text(layout.layout_unit(5)));
+    CHECK(first_run_is_prefix(layout.layout_unit(6), text, u8"• "));
+    CHECK(first_run_is_document_text(layout.layout_unit(7)));
+    const nmarkdown::BlockLayout* done = layout.layout_unit(8);
+    CHECK(done != nullptr && !done->lines.empty() &&
+          !done->lines.front().runs.empty() &&
+          done->lines.front().runs.front().task_checkbox &&
+          done->lines.front().runs.front().task_checked);
+    const nmarkdown::BlockLayout* open = layout.layout_unit(9);
+    CHECK(open != nullptr && !open->lines.empty() &&
+          !open->lines.front().runs.empty() &&
+          open->lines.front().runs.front().task_checkbox &&
+          !open->lines.front().runs.front().task_checked);
+    CHECK(first_run_is_prefix(layout.layout_unit(10), text, "1. "));
+
+    // Long flat ordered list: numbering must track sibling position for
+    // every item, not just early ones.
+    std::string flat = "# Flat\n\n";
+    for (int item = 1; item <= 600; ++item) {
+        flat += std::to_string(item) + ". item " + std::to_string(item) +
+                "\n";
+    }
+    nmarkdown::MarkdownDocument flat_document;
+    CHECK(nmarkdown::parse_markdown(
+        reinterpret_cast<const std::uint8_t*>(flat.data()), flat.size(),
+        flat_document, error));
+    nmarkdown::VirtualDocumentLayout flat_layout;
+    CHECK(flat_layout.initialize(flat_document, text, signature, error));
+    CHECK(flat_layout.unit_count() == 601);
+    if (flat_layout.unit_count() != 601) return;
+    CHECK(first_run_is_prefix(flat_layout.layout_unit(1), text, "1. "));
+    CHECK(first_run_is_prefix(flat_layout.layout_unit(300), text, "300. "));
+    CHECK(first_run_is_prefix(flat_layout.layout_unit(600), text, "600. "));
+}
+
 }  // namespace
 
 int main() {
@@ -699,6 +815,7 @@ int main() {
     test_idle_preload_is_incremental_and_bounded();
     test_plain_text_chunk_boundaries_are_visually_continuous();
     test_task_lists_use_native_checkbox_runs();
+    test_list_prefixes_match_document_order();
     if (failures != 0) {
         std::fprintf(stderr, "%d block layout test(s) failed\n", failures);
         return 1;

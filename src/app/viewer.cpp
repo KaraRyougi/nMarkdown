@@ -4067,10 +4067,9 @@ void Viewer::render_document(const Surface565& surface, Rect viewport) {
     }
     const ThemeColors colors = theme_colors(dark_theme_, high_contrast_);
     const int page_x = kPageX - pan_x_;
-    fill_rect(surface,
-              {page_x, viewport.y - scroll_y_, kPageWidth, document_height_},
-              colors.paper,
-              viewport);
+    // Every render_document branch must cover the whole viewport itself;
+    // render() no longer paints an inherited paper background beneath it.
+    fill_rect(surface, viewport, colors.paper, viewport);
 
     const int stride = block_stride();
     const int first_block = std::max(0, (scroll_y_ - stride) / stride);
@@ -4996,13 +4995,16 @@ void Viewer::render(const Surface565& surface) {
     }
 
     const ThemeColors colors = theme_colors(dark_theme_, high_contrast_);
-    surface.clear(colors.canvas);
+    // Full-frame coverage without a whole-surface clear: the header fill
+    // covers rows [0, kHeaderHeight), every render_document branch fills the
+    // complete viewport rows below it, and the two-row strip at the bottom
+    // stays outside the document clip so glyphs can never touch the physical
+    // bottom edge of the screen. Together these paint every pixel, so the
+    // presented frame and the retained base snapshot never see stale data.
     fill_rect(surface, {0, 0, kScreenWidth, kHeaderHeight}, colors.header);
-    // The paper reaches both physical screen edges. Keep the final two pixels
-    // of the paper body outside the document clip so glyphs can never touch
-    // the physical bottom edge of the screen.
     fill_rect(surface,
-              {0, kHeaderHeight, kScreenWidth, kBodyHeight},
+              {0, kHeaderHeight + kViewportHeight,
+               kScreenWidth, kBottomContentInset},
               colors.paper);
     const Rect viewport{0, kHeaderHeight, kScreenWidth, kViewportHeight};
     render_document(surface, viewport);

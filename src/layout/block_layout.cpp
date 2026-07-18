@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <limits>
 #include <string_view>
+#include <unordered_set>
 #include <utility>
 
 #include "nmarkdown/document/utf8.h"
@@ -1074,8 +1075,50 @@ void VirtualDocumentLayout::collect_units() {
 void VirtualDocumentLayout::collect_units_from(NodeId first_node) {
     if (document_ == nullptr) return;
     const DocumentIR& ir = document_->ir;
+    // Blocks are stored in document pre-order, so an item's ancestors always
+    // precede it. Tracking which list items already emitted a unit, and each
+    // ordered list's running number, keeps this pass linear; the old code
+    // rescanned all previously collected units per list unit, which made
+    // list-heavy documents quadratic to open and to reflow.
+    std::unordered_set<NodeId> items_with_units;
+    std::unordered_map<NodeId, std::uint32_t> next_ordered_number;
+    std::unordered_map<NodeId, std::uint32_t> ordered_number_of_item;
+    const auto assign_ordered_number = [&](NodeId item) {
+        const NodeId list = ir.blocks[item].parent;
+        if (list == kInvalidNode || list >= ir.blocks.size() ||
+            ir.blocks[list].kind != BlockKind::OrderedList) {
+            return;
+        }
+        auto counter = next_ordered_number
+                           .emplace(list, std::max<std::uint32_t>(
+                                              1, ir.blocks[list].aux))
+                           .first;
+        ordered_number_of_item[item] = counter->second++;
+    };
+    if (first_node != 0) {
+        for (const UnitInfo& previous : units_) {
+            for (NodeId cursor = previous.node;
+                 cursor != kInvalidNode && cursor < ir.blocks.size();
+                 cursor = ir.blocks[cursor].parent) {
+                if (ir.blocks[cursor].kind == BlockKind::ListItem) {
+                    items_with_units.insert(cursor);
+                }
+            }
+        }
+        for (NodeId node = 0; node < first_node && node < ir.blocks.size();
+             ++node) {
+            if (ir.blocks[node].kind == BlockKind::ListItem) {
+                assign_ordered_number(node);
+            }
+        }
+    }
+
+    std::vector<NodeId> item_ancestors;
     for (NodeId node = first_node; node < ir.blocks.size(); ++node) {
         const BlockRecord& block = ir.blocks[node];
+        // Ordered numbering follows sibling position even for items that
+        // never emit a unit, so every ordered item is counted on arrival.
+        if (block.kind == BlockKind::ListItem) assign_ordered_number(node);
         bool render = renderable_kind(block.kind);
         if (render && signature_.table_mode == 0 &&
             block.kind == BlockKind::TableRow &&
@@ -1097,28 +1140,26 @@ void VirtualDocumentLayout::collect_units_from(NodeId first_node) {
 
         UnitInfo info;
         info.node = node;
-        NodeId cursor = node;
         unsigned list_depth = 0;
         unsigned quote_depth = 0;
-        while (cursor != kInvalidNode && cursor < ir.blocks.size()) {
-            if (ir.blocks[cursor].kind == BlockKind::ListItem) ++list_depth;
+        item_ancestors.clear();
+        for (NodeId cursor = node;
+             cursor != kInvalidNode && cursor < ir.blocks.size();
+             cursor = ir.blocks[cursor].parent) {
+            if (ir.blocks[cursor].kind == BlockKind::ListItem) {
+                item_ancestors.push_back(cursor);
+                ++list_depth;
+            }
             if (ir.blocks[cursor].kind == BlockKind::Quote) ++quote_depth;
-            cursor = ir.blocks[cursor].parent;
         }
         info.quote_depth = static_cast<std::uint8_t>(std::min(quote_depth, 255U));
         info.indent_px = static_cast<std::uint16_t>(
             std::min(240U, list_depth * 14U + quote_depth * 8U));
 
-        const NodeId item = ancestor_of_kind(ir, node, BlockKind::ListItem);
+        const NodeId item = item_ancestors.empty() ? kInvalidNode
+                                                   : item_ancestors.front();
         if (item != kInvalidNode) {
-            bool first_for_item = true;
-            for (const UnitInfo& previous : units_) {
-                if (is_descendant(ir, previous.node, item)) {
-                    first_for_item = false;
-                    break;
-                }
-            }
-            if (first_for_item) {
+            if (items_with_units.count(item) == 0) {
                 const BlockRecord& item_block = ir.blocks[item];
                 const NodeId list = item_block.parent;
                 if ((item_block.flags & BlockFlagTask) != 0) {
@@ -1127,7 +1168,12 @@ void VirtualDocumentLayout::collect_units_from(NodeId first_node) {
                         (item_block.flags & BlockFlagChecked) != 0;
                 } else if (list != kInvalidNode && list < ir.blocks.size() &&
                            ir.blocks[list].kind == BlockKind::OrderedList) {
-                    info.prefix = std::to_string(ordered_item_number(ir, item)) + ". ";
+                    const auto numbered = ordered_number_of_item.find(item);
+                    const std::uint32_t number =
+                        numbered != ordered_number_of_item.end()
+                            ? numbered->second
+                            : ordered_item_number(ir, item);
+                    info.prefix = std::to_string(number) + ". ";
                 } else {
                     info.prefix = u8"• ";
                 }
@@ -1135,6 +1181,12 @@ void VirtualDocumentLayout::collect_units_from(NodeId first_node) {
         }
         unit_by_node_[node] = units_.size();
         units_.push_back(std::move(info));
+        // A unit inside nested items marks every enclosing item as started,
+        // so a paragraph following a nested sub-list in the same outer item
+        // is not treated as that outer item's first line.
+        for (NodeId ancestor : item_ancestors) {
+            items_with_units.insert(ancestor);
+        }
     }
 }
 

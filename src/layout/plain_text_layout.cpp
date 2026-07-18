@@ -194,6 +194,7 @@ void PlainTextLayout::clear() {
     incremental_layout_steps_ = 0;
     glyph_cache_clear_generation_ = 0;
     prefetch_raw_next_ = false;
+    invalidate_probe_lines();
 }
 
 bool PlainTextLayout::reconfigure(const LayoutSignature& signature,
@@ -206,6 +207,8 @@ bool PlainTextLayout::reconfigure(const LayoutSignature& signature,
     if (signature == signature_) return true;
     const std::uint32_t position = current_source_offset();
     signature_ = signature;
+    // Cached probe lines were wrapped for the previous width and font.
+    invalidate_probe_lines();
     reset_auto_page_rows();
     page_start_offsets_.clear();
     approximate_page_ = 1;
@@ -487,6 +490,13 @@ std::string_view PlainTextLayout::cached_view(
         linear_size);
 }
 
+void PlainTextLayout::invalidate_probe_lines() {
+    probe_lines_.clear();
+    probe_next_ = 0;
+    probe_next_offset_ = 0;
+    probe_valid_ = false;
+}
+
 bool PlainTextLayout::build_line(
     std::uint32_t start_offset,
     LayoutLine& line,
@@ -500,6 +510,29 @@ bool PlainTextLayout::build_line(
         eof = true;
         return false;
     }
+
+    // Serve naturally sequential requests from the sealed lines the previous
+    // probe already shaped: no HarfBuzz call, no byte-cache access. A hit
+    // requires the exact next offset, so out-of-order callers simply miss.
+    if (probe_valid_ && probe_next_ < probe_lines_.size() &&
+        start_offset == probe_next_offset_) {
+        line = std::move(probe_lines_[probe_next_]);
+        ++probe_next_;
+        const std::uint32_t next =
+            std::min(safe_line_end(line), source_size_);
+        if (probe_next_ >= probe_lines_.size()) {
+            invalidate_probe_lines();
+        } else {
+            probe_next_offset_ = next;
+        }
+        if (next <= start_offset) {
+            error = "plain-text line made no forward progress";
+            return false;
+        }
+        eof = next >= source_size_;
+        return true;
+    }
+    invalidate_probe_lines();
 
     const std::size_t needed = std::min<std::size_t>(
         kPlainTextLineProbeBytes, source_size_ - start_offset);
@@ -543,6 +576,43 @@ bool PlainTextLayout::build_line(
     if (next <= start_offset) {
         error = "plain-text line made no forward progress";
         return false;
+    }
+
+    // Retain the probe's remaining sealed lines for the sequential calls
+    // that follow. The final line is still open unless the probe reached the
+    // end of the source — more bytes could extend or re-wrap it — so it is
+    // dropped and shaped again by the next probe. Continuation lines were
+    // shaped with left context inside one HarfBuzz run; for the supported
+    // scripts their cluster advances match a fresh run started at the line
+    // boundary, and every consumer chains from the served line's own end, so
+    // the partition stays continuous either way.
+    const bool probe_reached_end =
+        static_cast<std::uint64_t>(start_offset) + consumed >= source_size_;
+    const std::size_t keep = probe_reached_end
+                                 ? block.lines.size()
+                                 : block.lines.size() - 1;
+    if (keep >= 2) {
+        // A wrap point drops the inter-word whitespace run from both
+        // neighbouring lines, while a fresh probe started at that whitespace
+        // folds it (glyph-free) into the following line's source range. Fold
+        // the same bytes into each retained line so served lines chain
+        // exactly like freshly probed ones: every line starts where the
+        // previous one ended.
+        std::uint32_t expected = next;
+        for (std::size_t index = 1; index < keep; ++index) {
+            LayoutLine& candidate = block.lines[index];
+            if (candidate.source_offset < expected) break;
+            const std::uint32_t gap = candidate.source_offset - expected;
+            candidate.source_offset = expected;
+            candidate.source_length += gap;
+            expected = std::min(safe_line_end(candidate), source_size_);
+            probe_lines_.push_back(std::move(candidate));
+        }
+        if (!probe_lines_.empty()) {
+            probe_next_ = 0;
+            probe_next_offset_ = next;
+            probe_valid_ = true;
+        }
     }
     eof = next >= source_size_;
     return true;

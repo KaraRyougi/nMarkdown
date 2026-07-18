@@ -885,6 +885,378 @@ void test_long_paragraph_screen_build_is_split_across_idle_quanta() {
     CHECK(source->read_calls == reads);
 }
 
+// Mixed-script fixture for wrapped-line partition tests: ASCII paragraphs
+// spanning several 192-byte probes, CJK paragraphs, blank-line runs, CRLF
+// endings, and cycling line lengths so probe boundaries land in many phases.
+// Every physical line stays far below the 4 KiB backward-alignment probe so
+// rebuilt previous regions always begin at a real line start.
+std::string partition_text() {
+    std::string result;
+    for (int paragraph = 0; result.size() < 96U * 1024U; ++paragraph) {
+        switch (paragraph % 6) {
+        case 0: {
+            result += "ascii";
+            for (int word = 0; word < 40 + (paragraph % 37); ++word) {
+                result += " wrap" + std::to_string(word);
+            }
+            result += "\n";
+            break;
+        }
+        case 1:
+            result += "\n\n";
+            break;
+        case 2: {
+            for (int index = 0; index < 120 + paragraph % 61; ++index) {
+                result += (index % 3 == 0) ? u8"中"
+                          : (index % 3 == 1) ? u8"文" : u8"排";
+            }
+            result += "\n";
+            break;
+        }
+        case 3:
+            result += "short-" + std::to_string(paragraph) + "\r\n";
+            break;
+        case 4:
+            result += std::string(
+                static_cast<std::size_t>(1 + paragraph % 200), 'x');
+            result += "\n";
+            break;
+        default:
+            result += u8"混合 mixed 行 with ASCII 与中文\n";
+            break;
+        }
+    }
+    return result;
+}
+
+bool advance_one_line(nmarkdown::PlainTextLayout& layout,
+                      std::string& error) {
+    for (int guard = 0; guard < 512; ++guard) {
+        if (layout.move_line(1, error)) return true;
+        if (!error.empty()) return false;
+        if (!layout.perform_incremental_work(error) || !error.empty()) {
+            if (!error.empty()) return false;
+        }
+    }
+    return false;
+}
+
+// The wrapped lines of a TXT document must form one continuous partition of
+// the source bytes: every line starts exactly where the previous line ended,
+// with no gaps and no overlaps, across screen boundaries, probe boundaries,
+// blank-line runs, and CRLF endings.
+void test_line_partition_is_continuous_forward() {
+    const std::string content = partition_text();
+    auto source = std::make_shared<CountingRandomAccess>(content);
+    nmarkdown::TextSystem text;
+    std::string error;
+    CHECK(text.initialize(error));
+
+    nmarkdown::PlainTextLayout layout;
+    nmarkdown::LayoutSignature signature;
+    CHECK(layout.initialize(
+        source, 0, static_cast<std::uint32_t>(content.size()), {}, text,
+        signature, 220, error));
+    CHECK(error.empty());
+
+    std::uint32_t expected_next = 0;
+    int steps = 0;
+    for (; steps < 320; ++steps) {
+        const std::vector<nmarkdown::PlainTextVisibleLine> visible =
+            layout.visible_lines(error);
+        CHECK(error.empty());
+        CHECK(!visible.empty());
+        if (visible.empty() || visible.front().line == nullptr) break;
+        const nmarkdown::LayoutLine& line = *visible.front().line;
+        CHECK(line.source_offset == expected_next);
+        CHECK(line.source_length != 0);
+        CHECK(layout.current_source_offset() == line.source_offset);
+        expected_next = line.source_offset + line.source_length;
+        if (!advance_one_line(layout, error)) break;
+        CHECK(error.empty());
+    }
+    CHECK(steps == 320);
+    CHECK(expected_next > 0);
+    CHECK(expected_next < content.size());
+}
+
+// Backward movement must stay on the same wrapped-line lattice the forward
+// pass produced. Within the retained screen window each Up step retreats
+// exactly one line; crossing the window edge rebuilds a bounded previous
+// region, which may retreat by more than one line when 4 KiB of source spans
+// more than the rebuilt screen budget, but every landing offset must still be
+// a forward line start and progress must stay strictly monotonic to offset 0.
+void test_line_partition_round_trip_backward() {
+    const std::string content = partition_text();
+    auto source = std::make_shared<CountingRandomAccess>(content);
+    nmarkdown::TextSystem text;
+    std::string error;
+    CHECK(text.initialize(error));
+
+    nmarkdown::PlainTextLayout layout;
+    nmarkdown::LayoutSignature signature;
+    CHECK(layout.initialize(
+        source, 0, static_cast<std::uint32_t>(content.size()), {}, text,
+        signature, 220, error));
+    CHECK(error.empty());
+
+    std::vector<std::uint32_t> offsets;
+    offsets.push_back(layout.current_source_offset());
+    for (int step = 0; step < 240; ++step) {
+        CHECK(advance_one_line(layout, error));
+        CHECK(error.empty());
+        offsets.push_back(layout.current_source_offset());
+    }
+    CHECK(offsets.size() == 241);
+
+    // Short round trip inside the retained window: exact one-line replay.
+    for (std::size_t step = 0; step < 20; ++step) {
+        CHECK(layout.current_source_offset() ==
+              offsets[offsets.size() - 1 - step]);
+        CHECK(layout.move_line(-1, error));
+        CHECK(error.empty());
+    }
+    for (std::size_t step = 20; step > 0; --step) {
+        CHECK(layout.current_source_offset() ==
+              offsets[offsets.size() - 1 - step]);
+        CHECK(advance_one_line(layout, error));
+        CHECK(error.empty());
+    }
+    CHECK(layout.current_source_offset() == offsets.back());
+
+    // Long walk to the document start: every landing stays on the forward
+    // lattice and strictly decreases, across every rebuilt previous region.
+    // A rebuild that lands exactly on the requested line reports "no move"
+    // once and succeeds on the next call; tolerate that single retry.
+    std::uint32_t previous = layout.current_source_offset();
+    int guard = 0;
+    while (layout.current_source_offset() != offsets.front() &&
+           guard < 512) {
+        bool moved = layout.move_line(-1, error);
+        CHECK(error.empty());
+        if (!moved) {
+            moved = layout.move_line(-1, error);
+            CHECK(error.empty());
+        }
+        CHECK(moved);
+        const std::uint32_t now = layout.current_source_offset();
+        CHECK(now < previous);
+        CHECK(std::binary_search(offsets.begin(), offsets.end(), now));
+        previous = now;
+        ++guard;
+    }
+    CHECK(guard < 512);
+    CHECK(layout.current_source_offset() == offsets.front());
+}
+
+// Reconfiguring the layout signature rebuilds the partition for the new
+// content width; the new partition must itself be continuous from the
+// preserved reading position. Seeking to the very end must produce a final
+// screen whose last line ends exactly at the source size.
+void test_line_partition_survives_reconfigure_and_end_seek() {
+    const std::string content = partition_text();
+    auto source = std::make_shared<CountingRandomAccess>(content);
+    nmarkdown::TextSystem text;
+    std::string error;
+    CHECK(text.initialize(error));
+
+    nmarkdown::PlainTextLayout layout;
+    nmarkdown::LayoutSignature signature;
+    CHECK(layout.initialize(
+        source, 0, static_cast<std::uint32_t>(content.size()), {}, text,
+        signature, 220, error));
+    CHECK(error.empty());
+
+    for (int step = 0; step < 40; ++step) {
+        CHECK(advance_one_line(layout, error));
+        CHECK(error.empty());
+    }
+
+    nmarkdown::LayoutSignature narrow = signature;
+    narrow.body_px = 17;
+    narrow.content_width = 288;
+    CHECK(layout.reconfigure(narrow, error));
+    CHECK(error.empty());
+
+    std::uint32_t expected_next = 0;
+    for (int step = 0; step < 40; ++step) {
+        const std::vector<nmarkdown::PlainTextVisibleLine> visible =
+            layout.visible_lines(error);
+        CHECK(error.empty());
+        CHECK(!visible.empty());
+        if (visible.empty() || visible.front().line == nullptr) break;
+        const nmarkdown::LayoutLine& line = *visible.front().line;
+        if (step != 0) CHECK(line.source_offset == expected_next);
+        expected_next = line.source_offset + line.source_length;
+        CHECK(advance_one_line(layout, error));
+        CHECK(error.empty());
+    }
+
+    CHECK(layout.seek_percentage(100, error));
+    CHECK(error.empty());
+    const std::vector<nmarkdown::PlainTextVisibleLine> final_visible =
+        layout.visible_lines(error);
+    CHECK(error.empty());
+    CHECK(!final_visible.empty());
+    if (!final_visible.empty() && final_visible.back().line != nullptr) {
+        const nmarkdown::LayoutLine& last = *final_visible.back().line;
+        CHECK(last.source_offset + last.source_length == content.size());
+    }
+
+    // Round-trip near the end: record while retreating, then replay forward.
+    std::vector<std::uint32_t> back_offsets;
+    back_offsets.push_back(layout.current_source_offset());
+    for (int step = 0; step < 25; ++step) {
+        CHECK(layout.move_line(-1, error));
+        CHECK(error.empty());
+        back_offsets.push_back(layout.current_source_offset());
+    }
+    for (std::size_t index = back_offsets.size() - 1; index > 0; --index) {
+        CHECK(layout.current_source_offset() == back_offsets[index]);
+        CHECK(advance_one_line(layout, error));
+        CHECK(error.empty());
+    }
+    CHECK(layout.current_source_offset() == back_offsets.front());
+}
+
+// Retreat with tolerance for the documented single-retry at a rebuilt
+// region boundary (a rebuild that lands exactly on the requested line
+// reports "no move" once and succeeds on the next call).
+bool retreat_one_line(nmarkdown::PlainTextLayout& layout,
+                      std::string& error) {
+    if (layout.move_line(-1, error)) return true;
+    if (!error.empty()) return false;
+    return layout.move_line(-1, error);
+}
+
+// Commit exactly one forward page, pumping the deferred pipeline when the
+// reserve is cold. move_page(1) is called at most once so the deferred
+// counter cannot accumulate extra pages.
+bool advance_one_page(nmarkdown::PlainTextLayout& layout,
+                      std::string& error) {
+    const std::uint32_t before = layout.current_source_offset();
+    if (layout.move_page(1, error)) return true;
+    if (!error.empty()) return false;
+    for (int guard = 0; guard < 4096; ++guard) {
+        if (layout.current_source_offset() > before) return true;
+        if (layout.deferred_forward_page_count() != 0) {
+            layout.preload_deferred_page_glyphs(8);
+        }
+        const bool worked = layout.perform_incremental_work(error);
+        if (!error.empty()) return false;
+        if (!worked && layout.deferred_forward_page_count() == 0) {
+            return layout.current_source_offset() > before;
+        }
+    }
+    return layout.current_source_offset() > before;
+}
+
+// Fast direction churn. Line level: rapid alternation (three up, two down)
+// drifting backward across the retained-window edge must keep every landing
+// on the forward wrapped-line lattice, and every forward step must land on
+// the exact successor. Page level: forty forward pages followed by PageUp
+// all the way home — the recorded 32-entry history must replay exactly, the
+// beyond-history fallback must stay monotonic, and the walk must end at 0.
+void test_fast_alternating_scroll_and_multi_page_churn() {
+    const std::string content = partition_text();
+    auto source = std::make_shared<CountingRandomAccess>(content);
+    nmarkdown::TextSystem text;
+    std::string error;
+    CHECK(text.initialize(error));
+
+    nmarkdown::PlainTextLayout layout;
+    nmarkdown::LayoutSignature signature;
+    CHECK(layout.initialize(
+        source, 0, static_cast<std::uint32_t>(content.size()), {}, text,
+        signature, 220, error));
+    CHECK(error.empty());
+
+    std::vector<std::uint32_t> offsets;
+    offsets.push_back(layout.current_source_offset());
+    for (int step = 0; step < 150; ++step) {
+        CHECK(advance_one_line(layout, error));
+        CHECK(error.empty());
+        offsets.push_back(layout.current_source_offset());
+    }
+
+    for (int cycle = 0; cycle < 60; ++cycle) {
+        for (int up = 0; up < 3; ++up) {
+            if (layout.current_source_offset() == offsets.front()) break;
+            CHECK(retreat_one_line(layout, error));
+            CHECK(error.empty());
+            CHECK(std::binary_search(offsets.begin(), offsets.end(),
+                                     layout.current_source_offset()));
+        }
+        for (int down = 0; down < 2; ++down) {
+            const auto found = std::lower_bound(
+                offsets.begin(), offsets.end(),
+                layout.current_source_offset());
+            CHECK(found != offsets.end() &&
+                  *found == layout.current_source_offset());
+            if (found == offsets.end() || found + 1 == offsets.end()) break;
+            CHECK(advance_one_line(layout, error));
+            CHECK(error.empty());
+            CHECK(layout.current_source_offset() == *(found + 1));
+        }
+    }
+
+    // Page-level churn on a fresh layout so line moves above cannot have
+    // cleared the page history.
+    nmarkdown::PlainTextLayout pages;
+    CHECK(pages.initialize(
+        source, 0, static_cast<std::uint32_t>(content.size()), {}, text,
+        signature, 220, error));
+    CHECK(error.empty());
+
+    std::vector<std::uint32_t> starts;
+    starts.push_back(pages.current_source_offset());
+    for (int page = 0; page < 40; ++page) {
+        CHECK(advance_one_page(pages, error));
+        CHECK(error.empty());
+        CHECK(pages.current_source_offset() > starts.back());
+        starts.push_back(pages.current_source_offset());
+    }
+
+    // The last kMaximumPageStartOffsets (32) page starts replay exactly.
+    for (int index = 39; index >= 8; --index) {
+        CHECK(pages.move_page(-1, error));
+        CHECK(error.empty());
+        CHECK(pages.current_source_offset() ==
+              starts[static_cast<std::size_t>(index)]);
+    }
+
+    // Beyond the history cap, PageUp falls back to walking one viewport of
+    // lines backward: strictly monotonic until the document start. A step
+    // that begins exactly at a rebuilt-region boundary is swallowed once
+    // (same wart as the line-level retry above); a second consecutive
+    // no-move is a real stall and fails the final position check.
+    std::uint32_t previous = pages.current_source_offset();
+    int guard = 0;
+    while (guard < 64) {
+        bool moved = pages.move_page(-1, error);
+        CHECK(error.empty());
+        if (!moved) {
+            moved = pages.move_page(-1, error);
+            CHECK(error.empty());
+        }
+        if (!moved) break;
+        CHECK(pages.current_source_offset() < previous);
+        previous = pages.current_source_offset();
+        ++guard;
+    }
+    CHECK(guard < 64);
+    CHECK(pages.current_source_offset() == 0);
+
+    // The pipeline must still page forward cleanly after the churn.
+    std::uint32_t forward_previous = pages.current_source_offset();
+    for (int page = 0; page < 3; ++page) {
+        CHECK(advance_one_page(pages, error));
+        CHECK(error.empty());
+        CHECK(pages.current_source_offset() > forward_previous);
+        forward_previous = pages.current_source_offset();
+    }
+}
+
 }  // namespace
 
 int main() {
@@ -900,6 +1272,10 @@ int main() {
     test_page_up_after_line_scroll_uses_a_full_previous_viewport();
     test_txt_scroll_aligns_the_movement_edge();
     test_long_paragraph_screen_build_is_split_across_idle_quanta();
+    test_line_partition_is_continuous_forward();
+    test_line_partition_round_trip_backward();
+    test_line_partition_survives_reconfigure_and_end_seek();
+    test_fast_alternating_scroll_and_multi_page_churn();
     if (failures != 0) {
         std::fprintf(stderr, "%d plain-text layout test(s) failed\n",
                      failures);

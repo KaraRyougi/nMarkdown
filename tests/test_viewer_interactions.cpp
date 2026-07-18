@@ -1510,6 +1510,61 @@ void test_font_manager_suggests_shared_multifunction_roles() {
 
 }  // namespace
 
+// render() paints the full frame from three regions (header fill, the
+// render_document branch's viewport fill, and the bottom inset strip)
+// instead of a redundant whole-surface clear. Prove the union still covers
+// every pixel in every document state and theme: prefill with a sentinel
+// color no theme uses and require that none of it survives a render.
+void test_full_repaint_covers_every_pixel() {
+    current_case = "full repaint coverage";
+    constexpr int kWidth = 320;
+    constexpr int kHeight = 240;
+    constexpr std::uint16_t kSentinel = 0xF81F;  // saturated magenta
+
+    struct Scenario {
+        const char* name;
+        std::function<bool(nmarkdown::Viewer&)> setup;
+    };
+    const Scenario scenarios[] = {
+        {"no document", [](nmarkdown::Viewer&) { return true; }},
+        {"markdown",
+         [](nmarkdown::Viewer& viewer) {
+             return load_markdown(viewer,
+                                  "# Title\n\nBody paragraph\n\n- item\n");
+         }},
+        {"plain text",
+         [](nmarkdown::Viewer& viewer) {
+             return load_plain_text(viewer, "line one\nline two\n");
+         }},
+        {"document error",
+         [](nmarkdown::Viewer& viewer) {
+             viewer.set_document_error("unreadable input");
+             return true;
+         }},
+    };
+
+    // Coverage is a property of fill geometry alone; themes only swap the
+    // fill colors, so one theme proves the union for all of them.
+    for (const Scenario& scenario : scenarios) {
+        nmarkdown::Viewer viewer;
+        CHECK(scenario.setup(viewer));
+        std::vector<std::uint16_t> pixels(
+            static_cast<std::size_t>(kWidth) * kHeight, kSentinel);
+        nmarkdown::Surface565 surface(pixels.data(), kWidth, kHeight,
+                                      kWidth);
+        viewer.render(surface);
+        std::size_t uncovered = 0;
+        for (std::uint16_t pixel : pixels) {
+            if (pixel == kSentinel) ++uncovered;
+        }
+        if (uncovered != 0) {
+            std::fprintf(stderr, "coverage gap: %zu pixels in '%s'\n",
+                         uncovered, scenario.name);
+        }
+        CHECK(uncovered == 0);
+    }
+}
+
 int main() {
     test_quit_has_global_priority();
     test_back_closes_visible_layer_before_reader();
@@ -1529,6 +1584,7 @@ int main() {
     test_page_keys_land_on_complete_line_boundaries();
     test_render_culls_lines_outside_the_viewport();
     test_font_manager_suggests_shared_multifunction_roles();
+    test_full_repaint_covers_every_pixel();
     test_passive_overlay_isolates_both_touchpad_modes();
     test_non_owning_shortcuts_do_not_leak_through_overlay_matrix();
     test_search_treats_navigation_digits_as_query_text();

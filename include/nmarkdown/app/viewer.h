@@ -295,7 +295,7 @@ private:
     GlyphRun document_browser_title_;
     GlyphRun font_browser_title_;
     GlyphRun link_title_;
-    GlyphRun link_target_run_;
+    std::vector<GlyphRun> link_target_runs_;
     GlyphRun link_hint_run_;
     GlyphRun loading_title_run_;
     GlyphRun loading_detail_run_;

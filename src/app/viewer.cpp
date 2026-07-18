@@ -747,7 +747,7 @@ void Viewer::rebuild_text_runs() {
     document_browser_title_ = {};
     font_browser_title_ = {};
     link_title_ = {};
-    link_target_run_ = {};
+    link_target_runs_.clear();
     link_hint_run_ = {};
     document_error_title_run_ = {};
     document_error_message_run_ = {};
@@ -1653,13 +1653,59 @@ bool Viewer::navigate_to_anchor(std::string_view fragment) {
 
 void Viewer::reshape_message_dialog_runs() {
     link_title_ = {};
-    link_target_run_ = {};
+    link_target_runs_.clear();
     link_hint_run_ = {};
     if (!text_ready_) return;
     text_.shape(link_dialog_title_.data(), link_dialog_title_.size(),
                 fx_from_int(kMenuTitlePixelSize), link_title_);
-    text_.shape(link_dialog_target_.data(), link_dialog_target_.size(),
-                fx_from_int(kMenuCompactPixelSize), link_target_run_);
+
+    // The body box is 256 px wide inside the 272 px message panel; its text
+    // sits at symmetric 5 px insets. Wrap the body greedily at word
+    // boundaries — falling back to codepoints for unspaced scripts — into at
+    // most two lines, ellipsizing anything longer.
+    constexpr int kMessageBodyWidthPx = 246;
+    constexpr std::size_t kMessageBodyLines = 2;
+    const Fx body_size = fx_from_int(kMenuCompactPixelSize);
+    std::string_view remaining(link_dialog_target_);
+    while (!remaining.empty() &&
+           link_target_runs_.size() < kMessageBodyLines) {
+        const bool final_line =
+            link_target_runs_.size() + 1U == kMessageBodyLines;
+        std::size_t take = remaining.size();
+        GlyphRun run;
+        for (;;) {
+            std::string candidate(remaining.substr(0, take));
+            if (final_line && take < remaining.size()) candidate += u8"…";
+            run = {};
+            const bool shaped = text_.shape(
+                candidate.data(), candidate.size(), body_size, run);
+            if (!shaped || fx_ceil(run.width) <= kMessageBodyWidthPx ||
+                take <= 1) {
+                break;
+            }
+            if (!final_line && take >= 2) {
+                const std::size_t space = remaining.rfind(' ', take - 2);
+                if (space != std::string_view::npos && space > 0) {
+                    take = space;
+                    continue;
+                }
+            }
+            --take;
+            while (take > 1 &&
+                   (static_cast<unsigned char>(remaining[take]) & 0xC0U) ==
+                       0x80U) {
+                --take;
+            }
+        }
+        link_target_runs_.push_back(std::move(run));
+        if (final_line) break;
+        std::size_t advance = take;
+        while (advance < remaining.size() && remaining[advance] == ' ') {
+            ++advance;
+        }
+        remaining.remove_prefix(advance);
+    }
+
     constexpr char kPromptHint[] = "Enter opens Fonts, Esc continues";
     constexpr char kCloseHint[] = "Enter or Esc closes";
     if (message_confirm_opens_font_menu_) {
@@ -4738,10 +4784,19 @@ void Viewer::render_overlay(const Surface565& surface, bool apply_scrim) {
                   colors.paper, panel);
         stroke_rect(surface, {panel.x + 8, panel.y + 34, panel.width - 16, 48},
                     colors.border, panel);
-        text_.draw_run(surface, link_target_run_, panel.x + 13, panel.y + 61,
-                       fx_from_int(kMenuCompactPixelSize),
-                       colors.ink, colors.paper,
-                       dark_theme_, true, panel);
+        // A single body line sits centered in the box; two wrapped lines
+        // share it with an 18 px stride.
+        const int first_body_baseline =
+            link_target_runs_.size() > 1 ? 52 : 61;
+        for (std::size_t line = 0; line < link_target_runs_.size();
+             ++line) {
+            text_.draw_run(surface, link_target_runs_[line], panel.x + 13,
+                           panel.y + first_body_baseline +
+                               static_cast<int>(line) * 18,
+                           fx_from_int(kMenuCompactPixelSize),
+                           colors.ink, colors.paper,
+                           dark_theme_, true, panel);
+        }
         text_.draw_run(surface, link_hint_run_, panel.x + 10, panel.y + 105,
                        fx_from_int(kMenuAuxiliaryPixelSize),
                        colors.muted_ink, colors.overlay,

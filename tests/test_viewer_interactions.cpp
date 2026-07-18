@@ -940,6 +940,23 @@ void test_missing_cjk_font_prompt_offers_font_manager() {
         CHECK(viewer.apply_reader_state(viewer.reader_state(0), 0));
         viewer.render(surface);
         CHECK(pixels == before);
+        // The body is longer than the dialog box, so it wraps onto a second
+        // line: both body rows inside the box must carry ink.
+        const std::uint16_t body_paper =
+            pixels[static_cast<std::size_t>(93) * kWidth + 40];
+        const auto band_has_ink = [&](int y_begin, int y_end) {
+            for (int y = y_begin; y < y_end; ++y) {
+                for (int x = 37; x < 284; ++x) {
+                    if (pixels[static_cast<std::size_t>(y) * kWidth + x] !=
+                        body_paper) {
+                        return true;
+                    }
+                }
+            }
+            return false;
+        };
+        CHECK(band_has_ink(101, 110));
+        CHECK(band_has_ink(119, 128));
         CHECK(!viewer.take_font_menu_request());
         CHECK(send(viewer, nmarkdown::InputEventType::Activate));
         CHECK(viewer.take_font_menu_request());

@@ -1031,6 +1031,18 @@ void test_catalog_bookmark_menu_jumps_and_toggles() {
         CHECK(send(plain, nmarkdown::InputEventType::OpenBookmarks));
         CHECK(send(plain, nmarkdown::InputEventType::Activate));
         CHECK(plain.reader_state(0).position.source_offset == marked);
+
+        // Inside the list, "+" saves the screen's first line and Del
+        // removes the selected bookmark again.
+        CHECK(send(plain, nmarkdown::InputEventType::ScrollLineDown));
+        CHECK(send(plain, nmarkdown::InputEventType::ScrollLineDown));
+        CHECK(send(plain, nmarkdown::InputEventType::OpenBookmarks));
+        const std::size_t before_add =
+            plain.reader_state(0).bookmarks.size();
+        CHECK(send(plain, nmarkdown::InputEventType::IncreaseFont));
+        CHECK(plain.reader_state(0).bookmarks.size() == before_add + 1);
+        CHECK(send(plain, nmarkdown::InputEventType::Backspace));
+        CHECK(plain.reader_state(0).bookmarks.size() == before_add);
     }
 }
 

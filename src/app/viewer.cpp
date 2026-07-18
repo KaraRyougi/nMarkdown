@@ -999,6 +999,10 @@ void Viewer::rebuild_bookmark_runs() {
         return;
     }
     bookmark_runs_.reserve(bookmarks_.size());
+    const std::uint64_t total_bytes =
+        markdown_document_ != nullptr
+            ? markdown_document_->source_size()
+            : plain_text_layout_.source_size();
     for (std::size_t index = 0; index < bookmarks_.size(); ++index) {
         std::string context;
         if (markdown_document_ != nullptr) {
@@ -1009,8 +1013,17 @@ void Viewer::rebuild_bookmark_runs() {
                 bookmarks_[index], ignored_error);
             if (context.empty()) context = "Saved text position";
         }
+        // Reading progress with one decimal, computed in integer permille.
+        const unsigned permille =
+            total_bytes == 0
+                ? 0U
+                : static_cast<unsigned>(std::min<std::uint64_t>(
+                      1000U,
+                      static_cast<std::uint64_t>(bookmarks_[index]) * 1000U /
+                          total_bytes));
         const std::string label =
-            std::to_string(index + 1) + " · " + context;
+            std::to_string(permille / 10U) + "." +
+            std::to_string(permille % 10U) + "% · " + context;
         GlyphRun run;
         text_.shape(label.data(), label.size(),
                     fx_from_int(kMenuListPixelSize), run);
@@ -3832,6 +3845,18 @@ bool Viewer::handle_event(const InputEvent& event) {
         break;
     case InputEventType::TextInput:
     case InputEventType::Backspace:
+        // Del removes the selected bookmark from the management list.
+        if (overlay_open_ && toc_overlay_ && bookmark_tab_ &&
+            bookmark_selected_ < bookmarks_.size()) {
+            bookmarks_.erase(bookmarks_.begin() +
+                             static_cast<std::ptrdiff_t>(bookmark_selected_));
+            if (bookmark_selected_ >= bookmarks_.size() &&
+                bookmark_selected_ > 0) {
+                --bookmark_selected_;
+            }
+            bookmark_changed = true;
+            rebuild_bookmark_runs();
+        }
         break;
     case InputEventType::Activate:
         if (overlay_open_ && settings_overlay_) {
@@ -3892,7 +3917,36 @@ bool Viewer::handle_event(const InputEvent& event) {
         }
         break;
     case InputEventType::IncreaseFont:
-        if (!overlay_open_) body_pixel_size_ = std::min(22, body_pixel_size_ + 1);
+        // While the bookmark list is open, "+" saves the reading position
+        // behind it — the first line of the current screen.
+        if (overlay_open_ && toc_overlay_ && bookmark_tab_) {
+            if ((markdown_document_ != nullptr &&
+                 markdown_layout_.unit_count() != 0) ||
+                plain_text_layout_.loaded()) {
+                const std::uint32_t source_offset =
+                    plain_text_layout_.loaded()
+                        ? plain_text_layout_.current_source_offset()
+                        : markdown_layout_.anchor_at(
+                              fx_from_int(scroll_y_)).source_offset;
+                const auto existing = std::find(
+                    bookmarks_.begin(), bookmarks_.end(), source_offset);
+                if (existing == bookmarks_.end() &&
+                    bookmarks_.size() < 256) {
+                    bookmarks_.push_back(source_offset);
+                    std::sort(bookmarks_.begin(), bookmarks_.end());
+                    bookmark_changed = true;
+                    rebuild_bookmark_runs();
+                }
+                const auto saved = std::find(
+                    bookmarks_.begin(), bookmarks_.end(), source_offset);
+                if (saved != bookmarks_.end()) {
+                    bookmark_selected_ = static_cast<std::size_t>(
+                        saved - bookmarks_.begin());
+                }
+            }
+        } else if (!overlay_open_) {
+            body_pixel_size_ = std::min(22, body_pixel_size_ + 1);
+        }
         break;
     case InputEventType::DecreaseFont:
         if (!overlay_open_) body_pixel_size_ = std::max(12, body_pixel_size_ - 1);

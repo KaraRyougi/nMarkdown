@@ -167,6 +167,9 @@ private:
     bool activate_link(std::uint32_t link_id);
     bool activate_current_link();
     bool current_block_is_wide(NodeId& node, int& maximum_pan);
+    void enter_wide_focus(NodeId node, int maximum_pan);
+    void exit_wide_focus();
+    bool consume_wide_pan(int pan_delta);
     int block_stride() const;
     int content_width() const;
     int reading_progress_width() const;

@@ -1361,7 +1361,10 @@ void test_wide_block_focus() {
     CHECK(viewer.pan_x() == final_pan);
     CHECK(viewer.handle_event({nmarkdown::InputEventType::Back, 0}));
     CHECK(viewer.pan_x() == 0);
-    CHECK(!viewer.handle_event({nmarkdown::InputEventType::PanRight, 0}));
+    // Horizontal input stays reserved for panning while the wide block is in
+    // view: the next press re-engages the pan instead of being inert.
+    CHECK(viewer.handle_event({nmarkdown::InputEventType::PanRight, 0}));
+    CHECK(viewer.pan_x() == 12);
     CHECK(!viewer.quit_requested());
 
     nmarkdown::Viewer wrapped;

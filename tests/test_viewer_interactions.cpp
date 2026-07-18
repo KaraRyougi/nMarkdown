@@ -588,7 +588,16 @@ void test_modal_swipes_and_touchpad_activation() {
 void test_touchpad_modes_and_gesture_direction() {
     current_case = "touchpad axes and independent gesture directions";
     nmarkdown::Viewer viewer;
-    CHECK(load_markdown(viewer, long_document_without_headings()));
+    // A deliberately narrow document: horizontal input over wide content is
+    // reserved for panning, and this test is about gesture-direction
+    // mapping, so no block may engage the pan reservation.
+    std::string plain_source;
+    for (int index = 0; index < 72; ++index) {
+        plain_source +=
+            "A long body paragraph keeps the reader scrollable while a "
+            "modal layer is visible.\n\n";
+    }
+    CHECK(load_markdown(viewer, plain_source));
     CHECK(viewer.reading_mode() == nmarkdown::ReadingMode::VerticalScroll);
     CHECK(viewer.natural_scrolling());
     CHECK(viewer.natural_swiping());
@@ -929,6 +938,61 @@ void test_wide_content_pan_keeps_conventional_directions() {
     CHECK(send(viewer, nmarkdown::InputEventType::PanLeft));
     CHECK(viewer.pan_x() == 0);
     CHECK(viewer.reader_state(0).code_wrap);
+}
+
+// When the viewport holds content that requires horizontal panning, left and
+// right input engages the pan directly — no prior Enter needed — and page
+// navigation never fires, including at the pan limits and immediately after
+// an explicit focus dismissal.
+void test_wide_block_reserves_horizontal_input_for_pan() {
+    current_case = "wide block reserves horizontal input";
+    nmarkdown::Viewer viewer;
+    CHECK(load_markdown(viewer, long_document_without_headings()));
+    CHECK(viewer.scroll_y() == 0);
+    CHECK(viewer.pan_x() == 0);
+
+    // PanRight pans the wide code block instead of turning a page.
+    CHECK(send(viewer, nmarkdown::InputEventType::PanRight));
+    CHECK(viewer.pan_x() > 0);
+    CHECK(viewer.scroll_y() == 0);
+
+    // Return to the pan origin; further PanLeft saturates without paging.
+    CHECK(send(viewer, nmarkdown::InputEventType::PanLeft));
+    CHECK(viewer.pan_x() == 0);
+    CHECK(!send(viewer, nmarkdown::InputEventType::PanLeft));
+    CHECK(viewer.pan_x() == 0);
+    CHECK(viewer.scroll_y() == 0);
+
+    // Dismissing focus with Back does not hand the next press to paging;
+    // horizontal input re-engages the pan while the block is in view.
+    CHECK(send(viewer, nmarkdown::InputEventType::Back));
+    CHECK(!viewer.quit_requested());
+    CHECK(viewer.pan_x() == 0);
+    CHECK(send(viewer, nmarkdown::InputEventType::PanRight));
+    CHECK(viewer.pan_x() > 0);
+    CHECK(viewer.scroll_y() == 0);
+
+    // Horizontal swipes are reserved the same way in vertical mode.
+    CHECK(send(viewer, nmarkdown::InputEventType::Back));
+    CHECK(send(viewer, nmarkdown::InputEventType::SwipeLeft));
+    CHECK(viewer.pan_x() > 0);
+    CHECK(viewer.scroll_y() == 0);
+    CHECK(send(viewer, nmarkdown::InputEventType::SwipeRight));
+    CHECK(viewer.pan_x() == 0);
+    CHECK(viewer.scroll_y() == 0);
+
+    // Scrolling past the wide block releases the reservation: left/right
+    // page again over plain prose.
+    CHECK(send(viewer, nmarkdown::InputEventType::Back));
+    CHECK(send(viewer, nmarkdown::InputEventType::PageDown));
+    const int paged_scroll = viewer.scroll_y();
+    CHECK(paged_scroll > 0);
+    CHECK(send(viewer, nmarkdown::InputEventType::PanRight));
+    CHECK(viewer.pan_x() == 0);
+    CHECK(viewer.scroll_y() > paged_scroll);
+    CHECK(send(viewer, nmarkdown::InputEventType::PanLeft));
+    CHECK(viewer.scroll_y() == paged_scroll);
+    CHECK(viewer.pan_x() == 0);
 }
 
 void test_plain_document_activation_is_inert() {
@@ -1575,6 +1639,7 @@ int main() {
     test_plain_text_rewarms_after_glyph_cache_clear();
     test_render_sharpness_setting_is_key_only_and_persisted();
     test_wide_content_pan_keeps_conventional_directions();
+    test_wide_block_reserves_horizontal_input_for_pan();
     test_plain_document_activation_is_inert();
     test_wrapped_code_focus_snaps_to_canvas_and_restores_scroll();
     test_large_display_formula_can_be_focused_and_panned();

@@ -1483,6 +1483,52 @@ bool Viewer::current_block_is_wide(NodeId& node, int& maximum_pan) {
     return layout != nullptr && inspect(*layout, unit, false);
 }
 
+void Viewer::enter_wide_focus(NodeId node, int maximum_pan) {
+    wide_focus_ = true;
+    focused_node_ = node;
+    focused_maximum_pan_ = maximum_pan;
+    pan_x_ = 0;
+    if (focused_code_layout_valid_) {
+        focused_return_scroll_y_ = scroll_y_;
+        focused_scroll_restore_valid_ = true;
+        scroll_y_ = focused_code_top_y_;
+    } else {
+        focused_scroll_restore_valid_ = false;
+    }
+}
+
+void Viewer::exit_wide_focus() {
+    const int return_scroll = focused_return_scroll_y_;
+    const bool restore_scroll = focused_scroll_restore_valid_;
+    wide_focus_ = false;
+    focused_node_ = kInvalidNode;
+    focused_maximum_pan_ = 0;
+    focused_code_layout_ = {};
+    focused_code_layout_valid_ = false;
+    focused_code_top_y_ = 0;
+    focused_scroll_restore_valid_ = false;
+    pan_x_ = 0;
+    if (restore_scroll) scroll_y_ = return_scroll;
+}
+
+// Horizontal input over content that needs panning is reserved for that pan.
+// When the viewport holds a pannable block — an overflowing formula, code
+// line, or grid table row — a left/right key, touchpad edge click, or swipe
+// engages the focus canvas directly and moves it; page navigation never sees
+// the event, and at the pan limits the position simply saturates instead of
+// rolling a page. Plain text documents and viewports without pannable
+// content return false so page turns behave exactly as before.
+bool Viewer::consume_wide_pan(int pan_delta) {
+    if (!wide_focus_) {
+        NodeId node = kInvalidNode;
+        int maximum_pan = 0;
+        if (!current_block_is_wide(node, maximum_pan)) return false;
+        enter_wide_focus(node, maximum_pan);
+    }
+    pan_x_ += pan_delta;
+    return true;
+}
+
 bool Viewer::activate_link(std::uint32_t link_id) {
     if (markdown_document_ == nullptr ||
         link_id >= markdown_document_->ir.links.size()) return false;
@@ -3439,10 +3485,9 @@ bool Viewer::handle_event(const InputEvent& event) {
             // The same physical drag also emits PointerPan. Ignore this
             // threshold marker while horizontal movement owns continuous
             // document scrolling.
-        } else if (wide_focus_) {
-            // Keep direct-manipulation panning: moving the finger left reveals
-            // content farther to the right on the focused canvas.
-            pan_x_ += std::max(12, content_width() - 24);
+        } else if (consume_wide_pan(std::max(12, content_width() - 24))) {
+            // Direct-manipulation panning over wide content: moving the
+            // finger left reveals content farther to the right.
         } else {
             move_page(natural_swiping_ ? -1 : 1);
         }
@@ -3452,8 +3497,8 @@ bool Viewer::handle_event(const InputEvent& event) {
             // Modal layers own touch gestures; do not move the document below.
         } else if (reading_mode_ == ReadingMode::HorizontalScroll) {
             // PointerPan owns horizontal movement in this mode.
-        } else if (wide_focus_) {
-            pan_x_ -= std::max(12, content_width() - 24);
+        } else if (consume_wide_pan(-std::max(12, content_width() - 24))) {
+            // Reserved for panning while wide content is in view.
         } else {
             move_page(natural_swiping_ ? 1 : -1);
         }
@@ -3465,8 +3510,8 @@ bool Viewer::handle_event(const InputEvent& event) {
             bookmark_tab_ = false;
         } else if (overlay_open_) {
             // Unknown modal input is consumed as a no-op.
-        } else if (wide_focus_) {
-            pan_x_ -= 12;
+        } else if (consume_wide_pan(-12)) {
+            // Reserved for panning while wide content is in view.
         } else {
             move_page(-1);
         }
@@ -3478,8 +3523,8 @@ bool Viewer::handle_event(const InputEvent& event) {
             bookmark_tab_ = true;
         } else if (overlay_open_) {
             // Unknown modal input is consumed as a no-op.
-        } else if (wide_focus_) {
-            pan_x_ += 12;
+        } else if (consume_wide_pan(12)) {
+            // Reserved for panning while wide content is in view.
         } else {
             move_page(1);
         }
@@ -3670,29 +3715,9 @@ bool Viewer::handle_event(const InputEvent& event) {
             int maximum_pan = 0;
             if (current_block_is_wide(node, maximum_pan)) {
                 if (wide_focus_ && focused_node_ == node) {
-                    const int return_scroll = focused_return_scroll_y_;
-                    const bool restore_scroll = focused_scroll_restore_valid_;
-                    wide_focus_ = false;
-                    focused_node_ = kInvalidNode;
-                    focused_maximum_pan_ = 0;
-                    focused_code_layout_ = {};
-                    focused_code_layout_valid_ = false;
-                    focused_code_top_y_ = 0;
-                    focused_scroll_restore_valid_ = false;
-                    pan_x_ = 0;
-                    if (restore_scroll) scroll_y_ = return_scroll;
+                    exit_wide_focus();
                 } else {
-                    wide_focus_ = true;
-                    focused_node_ = node;
-                    focused_maximum_pan_ = maximum_pan;
-                    pan_x_ = 0;
-                    if (focused_code_layout_valid_) {
-                        focused_return_scroll_y_ = scroll_y_;
-                        focused_scroll_restore_valid_ = true;
-                        scroll_y_ = focused_code_top_y_;
-                    } else {
-                        focused_scroll_restore_valid_ = false;
-                    }
+                    enter_wide_focus(node, maximum_pan);
                 }
             }
         }
@@ -3714,17 +3739,7 @@ bool Viewer::handle_event(const InputEvent& event) {
             font_browser_overlay_ = false;
             link_overlay_ = false;
         } else if (wide_focus_) {
-            const int return_scroll = focused_return_scroll_y_;
-            const bool restore_scroll = focused_scroll_restore_valid_;
-            wide_focus_ = false;
-            focused_node_ = kInvalidNode;
-            focused_maximum_pan_ = 0;
-            focused_code_layout_ = {};
-            focused_code_layout_valid_ = false;
-            focused_code_top_y_ = 0;
-            focused_scroll_restore_valid_ = false;
-            pan_x_ = 0;
-            if (restore_scroll) scroll_y_ = return_scroll;
+            exit_wide_focus();
         } else {
             quit_requested_ = true;
         }

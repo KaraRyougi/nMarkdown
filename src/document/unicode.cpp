@@ -189,4 +189,25 @@ Utf8ValidationResult unicode_normalize_utf8(std::string_view input,
     return validation;
 }
 
+bool contains_cjk_text(std::string_view utf8) {
+    std::size_t offset = 0;
+    while (offset < utf8.size()) {
+        const DecodedCodepoint decoded = utf8_next(
+            reinterpret_cast<const std::uint8_t*>(utf8.data()), utf8.size(),
+            static_cast<std::uint32_t>(offset));
+        offset += decoded.byte_length == 0 ? 1 : decoded.byte_length;
+        if (!decoded.valid) continue;
+        const std::uint32_t value = decoded.value;
+        if ((value >= 0x3000U && value <= 0x30FFU) ||
+            (value >= 0x3400U && value <= 0x4DBFU) ||
+            (value >= 0x4E00U && value <= 0x9FFFU) ||
+            (value >= 0xAC00U && value <= 0xD7AFU) ||
+            (value >= 0xF900U && value <= 0xFAFFU) ||
+            (value >= 0x20000U && value <= 0x3134FU)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 }  // namespace nmarkdown

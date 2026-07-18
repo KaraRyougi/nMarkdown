@@ -27,6 +27,10 @@ bool unicode_canonical_compose(std::uint32_t first,
 Utf8ValidationResult unicode_normalize_utf8(std::string_view input,
                                             UnicodeNormalizationForm form,
                                             std::string& output);
+// True when the UTF-8 text contains at least one CJK codepoint (Han, kana,
+// Hangul, compatibility ideographs, or the supplementary ideographic
+// planes). Invalid sequences are skipped rather than treated as matches.
+bool contains_cjk_text(std::string_view utf8);
 
 }  // namespace nmarkdown
 

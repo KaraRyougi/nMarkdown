@@ -17,6 +17,7 @@
 #include "nmarkdown/document/markdown.h"
 #include "nmarkdown/document/state.h"
 #include "nmarkdown/document/text_encoding.h"
+#include "nmarkdown/document/unicode.h"
 #include "nmarkdown/document/utf8.h"
 #include "nmarkdown/io/memory_random_access.h"
 #include "nmarkdown/platform/allocation_stats.h"
@@ -339,6 +340,48 @@ std::size_t complete_utf8_probe_prefix(
         --requested;
     }
     return requested;
+}
+
+// The CJK-role payload is only worth residency when the document actually
+// contains CJK text. A bounded prefix decides that: a codepoint match can
+// stop early, and a truncated trailing sequence decodes as invalid and is
+// skipped, so no boundary trimming is needed.
+constexpr std::size_t kCjkSampleBytes = 64U * 1024U;
+
+bool sample_contains_cjk(const std::uint8_t* bytes, std::size_t size) {
+    if (bytes == nullptr || size == 0) return false;
+    return contains_cjk_text(std::string_view(
+        reinterpret_cast<const char*>(bytes),
+        std::min(size, kCjkSampleBytes)));
+}
+
+// Startup variant for a document that has not been read yet: one bounded
+// sequential read, then the same encoding probe the loader uses. A legacy
+// CJK encoding (GBK, Shift-JIS, ...) is CJK by definition; UTF-8 samples
+// are scanned for CJK codepoints. Unknown or unreadable content reports
+// false, which keeps the CJK payload streaming — the safe direction.
+bool sampled_document_contains_cjk(FileSystem& files,
+                                   const std::string& path) {
+    std::shared_ptr<RandomAccessData> source;
+    std::string error;
+    if (!files.open_random_access(path.c_str(), source, error) ||
+        source == nullptr || source->size() == 0) {
+        return false;
+    }
+    std::vector<std::uint8_t> sample(static_cast<std::size_t>(
+        std::min<std::uint64_t>(source->size(), kCjkSampleBytes)));
+    if (!source->read(0, sample.data(), sample.size())) return false;
+    std::string decoded;
+    TextDecodeInfo info;
+    std::string decode_error;
+    if (!decode_text_auto(sample.data(),
+                          complete_utf8_probe_prefix(sample, sample.size()),
+                          kCjkSampleBytes * 4U, decoded, info,
+                          decode_error)) {
+        return false;
+    }
+    if (info.encoding != TextEncoding::Utf8) return true;
+    return contains_cjk_text(decoded);
 }
 
 std::uint64_t sampled_document_identity(
@@ -677,6 +720,9 @@ int run_reader(Display& display,
     // cheaper than the per-glyph streaming reads the session would otherwise
     // pay. Zero means unknown, which never justifies the upfront read.
     std::uint64_t current_document_bytes = 0;
+    // Whether that document contains CJK text; the CJK-role payload never
+    // becomes resident for documents that cannot exercise it.
+    bool current_document_has_cjk = false;
     // One failed promotion (heap probe or allocation) is remembered so a
     // large-document open does not re-read a multi-megabyte payload just to
     // fail the same way; an explicit font apply from the menu retries.
@@ -707,32 +753,6 @@ int run_reader(Display& display,
             if (!files.probe(actual_path.c_str(), document, error)) return false;
         }
         integration_log("DOCUMENT_PROBED");
-        // A document this large amortizes promoting a still-streamed font
-        // into RAM. Upgrading before this document is parsed and laid out
-        // makes the registry swap's glyph-cache clear and reflow free.
-        if (!resident_font_promotion_failed &&
-            options.maximum_resident_font_bytes != 0 &&
-            document.size >= options.minimum_resident_font_document_bytes) {
-            const FontRegistryState registry = viewer.font_registry_state();
-            bool promotable_stream = false;
-            for (const LoadedExternalFont& font : registry.fonts) {
-                if (font.source != nullptr && font.byte_size() != 0 &&
-                    font.byte_size() <=
-                        options.maximum_resident_font_bytes) {
-                    promotable_stream = true;
-                    break;
-                }
-            }
-            if (promotable_stream) {
-                current_document_bytes = document.size;
-                std::string upgrade_error;
-                if (!apply_font_assignments_safely(current_font_paths, false,
-                                                   upgrade_error)) {
-                    integration_log("FONT_RESIDENT_UPGRADE_FAILED");
-                }
-                loading.reattach();
-            }
-        }
         loading.stage("Reading file",
                       document.size >= kLargeDocumentFeedbackBytes &&
                           document.size <= options.maximum_source_bytes);
@@ -745,6 +765,7 @@ int run_reader(Display& display,
         std::uint32_t plain_text_content_size = 0;
         Utf8ValidationResult segmented_validation;
         bool streamed_utf8_text = false;
+        bool document_has_cjk = false;
         const bool plain_text = is_plain_text_path(actual_path);
         if (plain_text) {
             if (document.size > options.maximum_source_bytes) {
@@ -813,6 +834,9 @@ int run_reader(Display& display,
                     new_identity = sampled_document_identity(
                         probe, *plain_text_source, document.size);
                     streamed_utf8_text = true;
+                    document_has_cjk = sample_contains_cjk(
+                        validation_bytes,
+                        safe_size - plain_text_content_offset);
                 } else {
                     plain_text_source.reset();
                 }
@@ -860,6 +884,14 @@ int run_reader(Display& display,
                 plain_text_content_offset = 0;
                 plain_text_content_size =
                     static_cast<std::uint32_t>(decoded.size());
+                // A document that needed a legacy CJK decoder is CJK by
+                // definition; a UTF-8 one is sampled.
+                document_has_cjk =
+                    decode_info.encoding != TextEncoding::Utf8 ||
+                    sample_contains_cjk(
+                        reinterpret_cast<const std::uint8_t*>(
+                            decoded.data()),
+                        decoded.size());
                 plain_text_source =
                     std::make_shared<MemoryRandomAccessData>(
                         std::move(decoded));
@@ -886,6 +918,8 @@ int run_reader(Display& display,
                     "sanitized Markdown text exceeds the configured size limit";
                 return false;
             }
+            document_has_cjk =
+                sample_contains_cjk(bytes.data() + bom_bytes, retained_bytes);
             if (!parse_markdown(bytes.data(), bytes.size(), *markdown, error)) {
                 return false;
             }
@@ -939,6 +973,49 @@ int run_reader(Display& display,
         // Parsing retains sanitized source in MarkdownDocument. Release the
         // raw input before reflow, font shaping, and state restoration begin.
         std::vector<std::uint8_t>().swap(bytes);
+        current_document_bytes = document.size;
+        current_document_has_cjk = document_has_cjk;
+        // A document this large amortizes promoting a still-streamed font
+        // into RAM. Upgrading before this document is laid out makes the
+        // registry swap's glyph-cache clear and reflow free, and running
+        // after the raw input was released leaves the most heap headroom.
+        // A payload serving only the CJK role additionally requires actual
+        // CJK content.
+        if (!resident_font_promotion_failed &&
+            options.maximum_resident_font_bytes != 0 &&
+            document.size >= options.minimum_resident_font_document_bytes) {
+            const FontRegistryState registry = viewer.font_registry_state();
+            const std::size_t cjk_role = static_cast<std::size_t>(
+                external_font_role_index(FontRole::Cjk));
+            bool promotable_stream = false;
+            for (const LoadedExternalFont& font : registry.fonts) {
+                if (font.source == nullptr || font.byte_size() == 0 ||
+                    font.byte_size() >
+                        options.maximum_resident_font_bytes) {
+                    continue;
+                }
+                bool cjk_only = registry.roles[cjk_role] == font.id;
+                for (std::size_t role = 0;
+                     cjk_only && role < registry.roles.size(); ++role) {
+                    if (role != cjk_role &&
+                        registry.roles[role] == font.id) {
+                        cjk_only = false;
+                    }
+                }
+                if (!cjk_only || current_document_has_cjk) {
+                    promotable_stream = true;
+                    break;
+                }
+            }
+            if (promotable_stream) {
+                std::string upgrade_error;
+                if (!apply_font_assignments_safely(current_font_paths, false,
+                                                   upgrade_error)) {
+                    integration_log("FONT_RESIDENT_UPGRADE_FAILED");
+                }
+                loading.reattach();
+            }
+        }
         save_current_state();
         loading.stage("Preparing first page");
         if (plain_text) {
@@ -1073,6 +1150,29 @@ int run_reader(Display& display,
         }
         std::size_t unique_bytes = 0;
         std::size_t resident_bytes = 0;
+        // A payload requested only for the CJK role cannot be exercised by a
+        // document without CJK text, so it stays streamed for such
+        // documents. Variant roles are applied after the CJK role; path
+        // equality (tolerating the .tns suffix) decides sharing up front.
+        const std::size_t cjk_role_index = static_cast<std::size_t>(
+            external_font_role_index(FontRole::Cjk));
+        const auto equivalent_paths = [](const std::string& left,
+                                         const std::string& right) {
+            return left == right || left + ".tns" == right ||
+                   left == right + ".tns";
+        };
+        bool cjk_path_serves_other_role = false;
+        if (!requested[cjk_role_index].empty()) {
+            for (std::size_t index = 0; index < kExternalFontRoleCount;
+                 ++index) {
+                if (index != cjk_role_index &&
+                    !requested[index].empty() &&
+                    equivalent_paths(requested[index],
+                                     requested[cjk_role_index])) {
+                    cjk_path_serves_other_role = true;
+                }
+            }
+        }
 
         for (std::size_t role_index = 0;
              role_index < kExternalFontRoleCount; ++role_index) {
@@ -1195,7 +1295,12 @@ int run_reader(Display& display,
                     const bool document_amortizes_read =
                         current_document_bytes >=
                         options.minimum_resident_font_document_bytes;
-                    if (fits_budget && document_amortizes_read) {
+                    const bool role_needed_by_document =
+                        role_index != cjk_role_index ||
+                        cjk_path_serves_other_role ||
+                        current_document_has_cjk;
+                    if (fits_budget && document_amortizes_read &&
+                        role_needed_by_document) {
                         loading.stage(
                             "Loading " +
                                 font_label_from_path(actual_path) +
@@ -1461,6 +1566,17 @@ int run_reader(Display& display,
             }
         }
         current_document_bytes = startup_probe.size;
+        // One bounded content sample decides whether a remembered CJK-role
+        // font is worth promoting during the apply below. Read it only when
+        // that decision is actually on the table.
+        if (current_document_bytes >=
+                options.minimum_resident_font_document_bytes &&
+            options.maximum_resident_font_bytes != 0 &&
+            !startup_font_paths[static_cast<std::size_t>(
+                 external_font_role_index(FontRole::Cjk))].empty()) {
+            current_document_has_cjk = sampled_document_contains_cjk(
+                files, startup_document_path);
+        }
     }
     // Resolve remembered roles before opening the document. Large UTF-8 TXT
     // uses a bounded sequential cache rather than a giant source allocation;

@@ -295,6 +295,7 @@ private:
     GlyphRun jump_query_run_;
     GlyphRun jump_hint_run_;
     GlyphRun bookmark_title_;
+    GlyphRun bookmark_hint_run_;
     GlyphRun settings_title_;
     GlyphRun diagnostics_title_;
     GlyphRun document_browser_title_;

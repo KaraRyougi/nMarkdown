@@ -73,16 +73,18 @@ std::size_t wrap_next_row(std::size_t selected,
 // strip, accent on the panel body near its bottom edge.
 void draw_list_overflow_hints(const Surface565& surface,
                               const Rect& panel,
-                              std::uint16_t above_color,
-                              std::uint16_t below_color,
+                              std::uint16_t color,
+                              int first_row_top,
                               bool more_above,
                               bool more_below) {
     const int center_x = panel.x + panel.width - 12;
     if (more_above) {
+        // The up hint sits on the first visible option row, not the title.
         for (int row = 0; row < 4; ++row) {
             fill_rect(surface,
-                      {center_x - row, panel.y + 7 + row, row * 2 + 1, 1},
-                      above_color, panel);
+                      {center_x - row, first_row_top + 6 + row,
+                       row * 2 + 1, 1},
+                      color, panel);
         }
     }
     if (more_below) {
@@ -91,7 +93,7 @@ void draw_list_overflow_hints(const Surface565& surface,
                       {center_x - (3 - row),
                        panel.y + panel.height - 12 + row,
                        (3 - row) * 2 + 1, 1},
-                      below_color, panel);
+                      color, panel);
         }
     }
 }
@@ -825,6 +827,7 @@ void Viewer::rebuild_text_runs() {
     toc_title_ = {};
     search_title_ = {};
     bookmark_title_ = {};
+    bookmark_hint_run_ = {};
     settings_title_ = {};
     diagnostics_title_ = {};
     document_browser_title_ = {};
@@ -853,6 +856,11 @@ void Viewer::rebuild_text_runs() {
     text_ready_ = text_ready_ &&
                   text_.shape("Bookmarks", text_size("Bookmarks"),
                               fx_from_int(kMenuTitlePixelSize), bookmark_title_);
+    text_ready_ = text_ready_ &&
+                  text_.shape("+ adds · Del removes",
+                              text_size("+ adds · Del removes"),
+                              fx_from_int(kMenuAuxiliaryPixelSize),
+                              bookmark_hint_run_);
     text_ready_ = text_ready_ &&
                   text_.shape("Reader settings", text_size("Reader settings"),
                               fx_from_int(kMenuTitlePixelSize), settings_title_);
@@ -4839,10 +4847,9 @@ void Viewer::render_overlay(const Surface565& surface, bool apply_scrim) {
                            selected ? rgb565(250, 252, 255) : colors.ink,
                            background, dark_theme_, true, panel);
         }
-        draw_list_overflow_hints(surface, panel,
-                                 rgb565(250, 252, 255),
-                                 colors.accent, first > 0,
-                                 last < row_count);
+        draw_list_overflow_hints(surface, panel, colors.accent,
+                                 panel.y + kMenuListFirstRowY,
+                                 first > 0, last < row_count);
         return;
     }
     if (document_browser_overlay_) {
@@ -4882,10 +4889,9 @@ void Viewer::render_overlay(const Surface565& surface, bool apply_scrim) {
                            selected ? rgb565(250, 252, 255) : colors.ink,
                            background, dark_theme_, true, panel);
         }
-        draw_list_overflow_hints(surface, panel,
-                                 rgb565(250, 252, 255),
-                                 colors.accent, first > 0,
-                                 last < document_browser_runs_.size());
+        draw_list_overflow_hints(surface, panel, colors.accent,
+                                 panel.y + kMenuListFirstRowY,
+                                 first > 0, last < document_browser_runs_.size());
         return;
     }
     if (diagnostics_overlay_) {
@@ -4943,10 +4949,9 @@ void Viewer::render_overlay(const Surface565& surface, bool apply_scrim) {
                                selected ? rgb565(250, 252, 255) : colors.ink,
                                background, dark_theme_, true, panel);
             }
-            draw_list_overflow_hints(surface, panel,
-                                     rgb565(250, 252, 255),
-                                     colors.accent, first > 0,
-                                     last < link_choice_runs_.size());
+            draw_list_overflow_hints(surface, panel, colors.accent,
+                                     panel.y + kMenuListFirstRowY,
+                                     first > 0, last < link_choice_runs_.size());
             return;
         }
         fill_rect(surface, {panel.x + 8, panel.y + 34, panel.width - 16, 48},
@@ -5018,10 +5023,9 @@ void Viewer::render_overlay(const Surface565& surface, bool apply_scrim) {
                            selected ? rgb565(250, 252, 255) : colors.ink,
                            row_background, dark_theme_, true, panel);
         }
-        draw_list_overflow_hints(surface, panel,
-                                 rgb565(250, 252, 255),
-                                 colors.accent, first > 0,
-                                 last < search_result_runs_.size());
+        draw_list_overflow_hints(surface, panel, colors.accent,
+                                 panel.y + kSearchFirstRowY,
+                                 first > 0, last < search_result_runs_.size());
         return;
     }
     if (jump_overlay_) {
@@ -5076,10 +5080,9 @@ void Viewer::render_overlay(const Surface565& surface, bool apply_scrim) {
                            selected ? rgb565(250, 252, 255) : colors.ink,
                            background, dark_theme_, true, panel);
         }
-        draw_list_overflow_hints(surface, panel,
-                                 rgb565(250, 252, 255),
-                                 colors.accent, first > 0,
-                                 last < settings_runs_.size());
+        draw_list_overflow_hints(surface, panel, colors.accent,
+                                 panel.y + kSettingsFirstRowY,
+                                 first > 0, last < settings_runs_.size());
         return;
     }
     // Bookmarks are independent of the Markdown section system, so the list
@@ -5101,6 +5104,17 @@ void Viewer::render_overlay(const Surface565& surface, bool apply_scrim) {
                        dark_theme_,
                        true,
                        panel);
+        if (show_bookmarks) {
+            // Key instructions live right-aligned in the header so the
+            // management actions are discoverable without a help page.
+            text_.draw_run(surface, bookmark_hint_run_,
+                           panel.x + panel.width - 10 -
+                               fx_ceil(bookmark_hint_run_.width),
+                           panel.y + 16,
+                           fx_from_int(kMenuAuxiliaryPixelSize),
+                           rgb565(196, 208, 226), colors.header,
+                           dark_theme_, true, panel);
+        }
         if (!bookmarks_.empty()) {
             const int tab_y = panel.y + 22;
             fill_rect(surface,
@@ -5149,10 +5163,9 @@ void Viewer::render_overlay(const Surface565& surface, bool apply_scrim) {
                            true,
                            panel);
         }
-        draw_list_overflow_hints(surface, panel,
-                                 rgb565(250, 252, 255),
-                                 colors.accent, first > 0,
-                                 last < rows.size());
+        draw_list_overflow_hints(surface, panel, colors.accent,
+                                 panel.y + kMenuListFirstRowY,
+                                 first > 0, last < rows.size());
         if (rows.empty()) {
             const GlyphRun& empty_message = show_bookmarks
                                                 ? bookmark_empty_run_

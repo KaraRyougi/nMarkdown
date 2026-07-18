@@ -946,15 +946,16 @@ void test_settings_list_shows_overflow_hints() {
     const auto at = [&](int x, int y) {
         return pixels[static_cast<std::size_t>(y) * kWidth + x];
     };
-    // At the top of the list only the below-hint shows.
-    CHECK(at(294, 25) == at(280, 25));
+    // At the top of the list only the below-hint shows; the up-hint sits
+    // on the first visible option row once scrolled.
+    CHECK(at(294, 50) == at(280, 50));
     CHECK(at(294, 210) != at(280, 210));
 
     for (int row = 0; row < 12; ++row) {
         CHECK(send(viewer, nmarkdown::InputEventType::ScrollLineDown));
     }
     viewer.render(surface);
-    CHECK(at(294, 25) != at(280, 25));
+    CHECK(at(294, 50) != at(280, 50));
     CHECK(at(294, 210) == at(280, 210));
 }
 
@@ -1021,6 +1022,29 @@ void test_catalog_bookmark_menu_jumps_and_toggles() {
     CHECK(deep_scroll > marked_scroll);
 
     CHECK(send(viewer, nmarkdown::InputEventType::OpenBookmarks));
+    // The header shows the "+ adds · Del removes" instruction: some ink in
+    // the header's right half differs from the plain header fill.
+    {
+        constexpr int kWidth = 320;
+        constexpr int kHeight = 240;
+        std::vector<std::uint16_t> pixels(kWidth * kHeight, 0);
+        nmarkdown::Surface565 surface(pixels.data(), kWidth, kHeight,
+                                      kWidth);
+        viewer.render(surface);
+        const std::uint16_t header_fill =
+            pixels[static_cast<std::size_t>(30) * kWidth + 150];
+        bool hint_ink = false;
+        for (int y = 32; y < 44 && !hint_ink; ++y) {
+            for (int x = 180; x < 286; ++x) {
+                if (pixels[static_cast<std::size_t>(y) * kWidth + x] !=
+                    header_fill) {
+                    hint_ink = true;
+                    break;
+                }
+            }
+        }
+        CHECK(hint_ink);
+    }
     CHECK(send(viewer, nmarkdown::InputEventType::Activate));
     CHECK(viewer.scroll_y() < deep_scroll);
     CHECK(viewer.scroll_y() <= marked_scroll);
